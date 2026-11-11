@@ -37,8 +37,10 @@ def run_clean(store: DataStore, settings: Settings) -> dict[str, pd.DataFrame]:
 
     event_areas = clean.clean_event_protected_areas(raw_events)
     area_activity = clean.clean_protected_area_activity(raw_area_reports)
+    insights = clean.clean_vessel_insights(raw_insights)
+    listings = clean.clean_iuu_listings(raw_insights)
     cohort = clean.clean_cohort_members(
-        store.read_raw("cohort"), raw_area_report, settings.patrol_area.min_fishing_hours
+        store.read_raw("cohort"), raw_area_report, settings.patrol_area.min_fishing_hours, listings
     )
     vessels = clean.clean_vessels(
         store.read_raw("vessel_identities"), raw_area_report + raw_area_reports, raw_events
@@ -51,8 +53,6 @@ def run_clean(store: DataStore, settings: Settings) -> dict[str, pd.DataFrame]:
     events = events[events["vessel_id"].isin(members)].reset_index(drop=True)
     event_areas = event_areas[event_areas["event_id"].isin(set(events["event_id"]))]
     area_activity = area_activity[area_activity["vessel_id"].isin(members)]
-    insights = clean.clean_vessel_insights(raw_insights)
-    listings = clean.clean_iuu_listings(raw_insights)
 
     tables = {
         "vessels": vessels,

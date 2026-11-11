@@ -27,3 +27,6 @@ Thumbs.db
 
 # The synthetic sample is regenerated on demand.
 data/sample/
+
+# Local tool settings
+.claude/

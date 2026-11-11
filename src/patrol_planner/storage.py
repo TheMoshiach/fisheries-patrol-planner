@@ -52,6 +52,7 @@ RAW_DATASETS = (
     "events",
     "insights",
     "cohort",
+    "iuu_seed_imos",
 )
 
 
@@ -125,6 +126,11 @@ class DataStore:
         return json.loads(self.manifest_path.read_text(encoding="utf-8"))
 
 
+def data_root() -> Path:
+    """Folder holding the ``real`` and ``sample`` datasets (PATROL_PLANNER_DATA_ROOT overrides)."""
+    return Path(os.environ.get("PATROL_PLANNER_DATA_ROOT") or DATA_ROOT)
+
+
 def data_mode() -> str:
     """Which dataset the app and CLI use: ``real`` when it has been built, else ``sample``.
 
@@ -133,8 +139,8 @@ def data_mode() -> str:
     forced = os.environ.get("PATROL_PLANNER_DATA", "").strip().lower()
     if forced in ("real", "sample"):
         return forced
-    return "real" if DataStore(DATA_ROOT / "real").exists("risk_scores") else "sample"
+    return "real" if DataStore(data_root() / "real").exists("risk_scores") else "sample"
 
 
 def open_store(mode: str | None = None) -> DataStore:
-    return DataStore(DATA_ROOT / (mode or data_mode()))
+    return DataStore(data_root() / (mode or data_mode()))

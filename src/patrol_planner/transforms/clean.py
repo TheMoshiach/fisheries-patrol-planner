@@ -370,12 +370,20 @@ def clean_cohort_members(
     raw_cohort: Iterable[dict],
     raw_patrol_area_report: Iterable[dict],
     min_fishing_hours: float,
+    iuu_listings: pd.DataFrame,
 ) -> pd.DataFrame:
     """Patrol-area cohort (fishing vessels active in the box) and evaluation cohort.
 
-    Every patrol-area vessel is also in the evaluation cohort, next to the vessels
-    seeded from official IUU lists and the random comparison vessels.
+    Every patrol-area vessel is also in the evaluation cohort, next to the random
+    comparison vessels and the vessels found through official IUU lists.
+
+    A vessel found through an IUU list is kept only when the ground-truth table
+    confirms a listing. The lists are searched by IMO number, and a number can
+    belong to a vessel that was since delisted or that merely shares the number;
+    such vessels are neither reliable positives nor fair negatives, so they are
+    left out rather than guessed at.
     """
+    confirmed = set(iuu_listings["vessel_id"].dropna())
     hours: dict[str, float] = {}
     for row in raw_patrol_area_report:
         vessel_id = _text(row.get("vesselId") or row.get("vessel_id"))
@@ -401,8 +409,10 @@ def clean_cohort_members(
     ordered = sorted(raw_cohort, key=lambda r: r.get("selection_reason") != "iuu_list_seed")
     for record in ordered:
         vessel_id = _text(record.get("vessel_id"))
-        if vessel_id:
-            add("evaluation", vessel_id, _text(record.get("selection_reason")) or "unknown")
+        reason = _text(record.get("selection_reason")) or "unknown"
+        if not vessel_id or (reason == "iuu_list_seed" and vessel_id not in confirmed):
+            continue
+        add("evaluation", vessel_id, reason)
     for vessel_id in sorted(patrol):
         add("patrol_area", vessel_id, "active_in_patrol_area")
         add("evaluation", vessel_id, "active_in_patrol_area")
