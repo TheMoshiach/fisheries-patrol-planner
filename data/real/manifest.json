@@ -1,0 +1,27 @@
+{
+  "data_mode": "real",
+  "label": "Real data from Global Fishing Watch and official RFMO IUU vessel lists",
+  "attribution": "Powered by Global Fishing Watch. https://globalfishingwatch.org",
+  "licence": "CC BY-NC 4.0 (non-commercial use only)",
+  "accessed": "2026-11-11",
+  "window_start": "2025-10-01",
+  "window_end": "2026-10-01",
+  "patrol_area": "Galapagos and surrounding high seas",
+  "watched_protected_areas": {
+    "11753": "Gal\u00e1pagos - Reserva Marina",
+    "555745151": "Hermandad - Reserva Marina"
+  },
+  "datasets": [
+    "public-global-encounters-events:latest",
+    "public-global-fishing-effort:v5.0",
+    "public-global-fishing-events:latest",
+    "public-global-gaps-events:latest"
+  ],
+  "iuu_list_sources": [
+    "https://iotc.org/sites/default/files/documents/compliance/vessel_lists/IUU%20lists/IOTC_IUU_Vessels_List_20260515%28E%2BF%29.pdf",
+    "https://www.ccamlr.org/en/compliance/non-contracting-party-iuu-vessel-list",
+    "https://www.ccsbt.org/sites/default/files/userfiles/file/docs_english/CCSBT%20IUU%20List.pdf"
+  ],
+  "vessels_fetched": 599,
+  "api_requests_this_run": 1365
+}
