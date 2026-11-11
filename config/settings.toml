@@ -1,0 +1,90 @@
+# Fisheries Patrol Planner settings.
+# Everything an officer or analyst may reasonably want to change lives here.
+
+[window]
+# Behaviour is analysed over the months leading up to (and excluding) this date.
+end = "2026-10-01"
+months = 12
+
+[patrol_area]
+name = "Galapagos and surrounding high seas"
+# Bounding box in degrees: west, south, east, north.
+bbox = [-97.0, -6.0, -84.0, 5.0]
+# A vessel joins the patrol-area list once it has at least this many apparent
+# fishing hours inside the box during the window.
+min_fishing_hours = 24.0
+# Protected areas the officer is responsible for. Matched by name, ignoring
+# accents and case, against the Global Fishing Watch protected-area list.
+watched_protected_areas = ["Galapagos Marine Reserve", "Hermandad"]
+# "Near" a watched protected area means within this many nautical miles of it.
+buffer_nm = 12.0
+
+[scoring]
+model_version = "rules-v1"
+
+# Each signal is turned into a strength between 0 and 1 with
+# strength = intensity / (intensity + half_point), then multiplied by its weight.
+# Weights must add up to 1. They are set from domain reasoning, not fitted to
+# the ground truth, so the accuracy numbers are not inflated by tuning.
+[scoring.weights]
+going_dark = 0.30
+encounters = 0.25
+protected_areas = 0.25
+unauthorized_fishing = 0.15
+identity_changes = 0.05
+
+[scoring.half_points]
+going_dark = 4.0
+encounters = 4.0
+protected_areas = 5.0
+unauthorized_fishing = 3.0
+identity_changes = 2.0
+
+[scoring.gap_rule]
+# Only AIS gaps this long and this far offshore count as "going dark"
+# (Global Fishing Watch's published reliability thresholds).
+min_hours = 12.0
+min_distance_from_shore_km = 92.6  # 50 nautical miles
+
+[scoring.tiers]
+high = 40.0
+elevated = 20.0
+
+[evaluation]
+# Number of randomly sampled fishing vessels used as the comparison group.
+control_vessels = 600
+random_seed = 20261001
+bootstrap_samples = 2000
+top_k = [10, 25, 50, 100]
+
+# The patrol fleet below is an illustrative example, not a record of real assets.
+# Replace it with your own boats.
+[[patrol_boats]]
+patrol_boat_id = "PB-01"
+name = "Patrol Boat 1 (example)"
+home_port = "Puerto Ayora"
+home_lat = -0.7433
+home_lon = -90.3125
+max_speed_knots = 25.0
+range_nm = 600.0
+status = "available"
+
+[[patrol_boats]]
+patrol_boat_id = "PB-02"
+name = "Patrol Boat 2 (example)"
+home_port = "Puerto Baquerizo Moreno"
+home_lat = -0.9020
+home_lon = -89.6100
+max_speed_knots = 22.0
+range_nm = 800.0
+status = "available"
+
+[[patrol_boats]]
+patrol_boat_id = "PB-03"
+name = "Patrol Boat 3 (example)"
+home_port = "Puerto Villamil"
+home_lat = -0.9560
+home_lon = -90.9660
+max_speed_knots = 30.0
+range_nm = 400.0
+status = "maintenance"

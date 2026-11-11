@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Raw API responses are a local cache; they are rebuilt by `fetch`.
+data/real/raw/
+
+# Officer decisions are operational records and stay on this machine.
+data/*/decisions/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+.streamlit/secrets.toml
+
+# The synthetic sample is regenerated on demand.
+data/sample/
