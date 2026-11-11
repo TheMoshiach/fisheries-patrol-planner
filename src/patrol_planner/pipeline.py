@@ -31,28 +31,32 @@ CLEAN_TABLES = (
 def run_clean(store: DataStore, settings: Settings) -> dict[str, pd.DataFrame]:
     raw_events = store.read_raw("events")
     raw_insights = store.read_raw("insights")
+    raw_identities = store.read_raw("vessel_identities")
     raw_area_report = store.read_raw("patrol_area_report")
     raw_area_list = store.read_raw("protected_area_list")
     raw_area_reports = store.read_raw("protected_area_reports")
 
-    event_areas = clean.clean_event_protected_areas(raw_events)
-    area_activity = clean.clean_protected_area_activity(raw_area_reports)
-    insights = clean.clean_vessel_insights(raw_insights)
     listings = clean.clean_iuu_listings(raw_insights)
     cohort = clean.clean_cohort_members(
-        store.read_raw("cohort"), raw_area_report, settings.patrol_area.min_fishing_hours, listings
-    )
-    vessels = clean.clean_vessels(
-        store.read_raw("vessel_identities"), raw_area_report + raw_area_reports, raw_events
+        store.read_raw("cohort"),
+        raw_area_report,
+        settings.patrol_area.min_fishing_hours,
+        listings,
+        settings.window.start,
+        settings.window.end,
     )
     # Only vessels that belong to a cohort are kept: counterpart vessels seen in
     # encounters stay as ids on the event rows.
-    vessels = vessels[vessels["vessel_id"].isin(set(cohort["vessel_id"]))].reset_index(drop=True)
-    members = set(vessels["vessel_id"])
+    members = set(cohort["vessel_id"])
+    vessels = clean.clean_vessels(raw_identities, raw_area_report + raw_area_reports, raw_events)
+    vessels = vessels[vessels["vessel_id"].isin(members)].reset_index(drop=True)
     events = clean.clean_events(raw_events)
     events = events[events["vessel_id"].isin(members)].reset_index(drop=True)
+    event_areas = clean.clean_event_protected_areas(raw_events)
     event_areas = event_areas[event_areas["event_id"].isin(set(events["event_id"]))]
+    area_activity = clean.clean_protected_area_activity(raw_area_reports)
     area_activity = area_activity[area_activity["vessel_id"].isin(members)]
+    insights = clean.clean_vessel_insights(raw_insights, raw_identities)
 
     tables = {
         "vessels": vessels,
@@ -64,7 +68,7 @@ def run_clean(store: DataStore, settings: Settings) -> dict[str, pd.DataFrame]:
         ),
         "vessel_insights": insights[insights["vessel_id"].isin(members)].reset_index(drop=True),
         "iuu_listings": listings[listings["vessel_id"].isin(members)].reset_index(drop=True),
-        "cohort_members": cohort[cohort["vessel_id"].isin(members)].reset_index(drop=True),
+        "cohort_members": cohort,
         "patrol_boats": clean.clean_patrol_boats(settings.patrol_boats),
     }
     problems = schemas.check_links(tables)
@@ -76,13 +80,12 @@ def run_clean(store: DataStore, settings: Settings) -> dict[str, pd.DataFrame]:
 
 
 def run_features(store: DataStore, settings: Settings) -> pd.DataFrame:
-    table = features.build_vessel_features(
+    table = features.build_cohort_features(
         vessels=store.read("vessels"),
         events=store.read("events"),
         protected_area_activity=store.read("protected_area_activity"),
         vessel_insights=store.read("vessel_insights"),
         cohort_members=store.read("cohort_members"),
-        window=settings.window,
         scoring=settings.scoring,
     )
     store.write("vessel_features", table)
@@ -103,15 +106,12 @@ def run_evaluation(store: DataStore, settings: Settings) -> tuple[pd.DataFrame, 
         risk_scores=store.read("risk_scores"),
         iuu_listings=store.read("iuu_listings"),
         cohort_members=store.read("cohort_members"),
-        vessels=store.read("vessels"),
-        window=settings.window,
     )
     metrics = evaluation_module.evaluate(
         evaluation_vessels=evaluation_vessels,
         vessel_features=store.read("vessel_features"),
         scoring=settings.scoring,
         settings=settings.evaluation,
-        window=settings.window,
     )
     store.write("evaluation_vessels", evaluation_vessels)
     store.write("evaluation_metrics", metrics)
@@ -130,6 +130,7 @@ def build(store: DataStore, settings: Settings) -> dict:
         "events": len(tables["events"]),
         "patrol_area_vessels": int((cohort["cohort"] == "patrol_area").sum()),
         "evaluation_vessels": len(evaluation_vessels),
+        "evaluation_groups": int(evaluation_vessels["match_group"].nunique()),
         "iuu_listed_in_evaluation": int(evaluation_vessels["iuu_listed"].sum()),
         "features": len(vessel_features),
         "scores": len(scores),

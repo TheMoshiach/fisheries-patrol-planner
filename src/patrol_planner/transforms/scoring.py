@@ -78,7 +78,7 @@ def score_vessels(features: pd.DataFrame, scoring: ScoringSettings) -> pd.DataFr
                 _confidence(c, n)
                 for c, n in zip(features["ais_coverage_pct"], features["fishing_events"])
             ],
-            "summary": _summaries(reasons, features["vessel_id"]),
+            "summary": _summaries(reasons, risk_score_ids(features, scoring)),
             "last_lat": features["last_lat"],
             "last_lon": features["last_lon"],
             "last_seen": features["last_seen"],
@@ -146,10 +146,10 @@ def _confidence(coverage_pct, fishing_events) -> str:
     return "medium" if (fishing_events or 0) >= 20 else "low"
 
 
-def _summaries(reasons: pd.DataFrame, vessel_ids: pd.Series) -> list[str]:
+def _summaries(reasons: pd.DataFrame, score_ids: pd.Series) -> list[str]:
     active = reasons[reasons["points"] > 0].sort_values("points", ascending=False)
-    top = active.groupby("vessel_id")["explanation"].apply(lambda s: " ".join(s.head(2)))
-    return [top.get(v, "No risk signals in the analysis window.") for v in vessel_ids]
+    top = active.groupby("risk_score_id")["explanation"].apply(lambda s: " ".join(s.head(2)))
+    return [top.get(i, "No risk signals in the analysis window.") for i in score_ids]
 
 
 def _n(count, singular: str, plural: str | None = None) -> str:

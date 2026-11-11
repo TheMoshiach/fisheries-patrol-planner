@@ -65,12 +65,58 @@ def build_vessel_features(
     return schemas.conform(out, schemas.VESSEL_FEATURES)
 
 
+def build_cohort_features(
+    vessels: pd.DataFrame,
+    events: pd.DataFrame,
+    protected_area_activity: pd.DataFrame,
+    vessel_insights: pd.DataFrame,
+    cohort_members: pd.DataFrame,
+    scoring: ScoringSettings,
+) -> pd.DataFrame:
+    """Features for every cohort member over that member's own analysis window.
+
+    Patrol-area vessels share the main window; each evaluation group has its own.
+    The same single-window function is applied to each window in turn.
+    """
+    frames = []
+    windows = cohort_members[["window_start", "window_end"]].drop_duplicates()
+    for start, end in windows.itertuples(index=False):
+        members = cohort_members[
+            (cohort_members["window_start"] == start) & (cohort_members["window_end"] == end)
+        ]
+        ids = set(members["vessel_id"])
+        frames.append(
+            build_vessel_features(
+                vessels=vessels[vessels["vessel_id"].isin(ids)],
+                events=events[events["vessel_id"].isin(ids)],
+                protected_area_activity=protected_area_activity[
+                    protected_area_activity["window_end"] == end
+                ],
+                vessel_insights=vessel_insights[vessel_insights["window_end"] == end],
+                cohort_members=members,
+                window=Window(start=start, end=end),
+                scoring=scoring,
+            )
+        )
+    if not frames:
+        return schemas.VESSEL_FEATURES.empty()
+    combined = pd.concat(frames, ignore_index=True).drop_duplicates("feature_id")
+    return schemas.conform(combined, schemas.VESSEL_FEATURES)
+
+
 def qualifying_gaps(events: pd.DataFrame, scoring: ScoringSettings) -> pd.DataFrame:
-    """AIS gaps long enough and far enough offshore to be read as "going dark"."""
+    """AIS gaps that can be read as "going dark".
+
+    A gap counts when it is long enough to rule out satellite timing, short enough
+    to rule out a lay-up, starts far enough offshore to rule out coastal reception
+    problems, and the source has not judged it unintentional.
+    """
     gaps = events[events["event_type"] == "gap"]
     long_enough = gaps["duration_hours"] >= scoring.gap_min_hours
+    not_too_long = gaps["duration_hours"] <= scoring.gap_max_hours
     offshore = gaps["start_distance_from_shore_km"] >= scoring.gap_min_distance_from_shore_km
-    return gaps[(long_enough & offshore).fillna(False)]
+    deliberate = gaps["intentional_disabling"].fillna(True).astype(bool)
+    return gaps[(long_enough & not_too_long & offshore).fillna(False) & deliberate]
 
 
 def _gap_features(events: pd.DataFrame, scoring: ScoringSettings) -> pd.DataFrame:
@@ -121,7 +167,7 @@ def _watched_area_features(activity: pd.DataFrame) -> pd.DataFrame:
 
 
 def _insight_features(insights: pd.DataFrame) -> pd.DataFrame:
-    return insights[
+    return insights.drop_duplicates("vessel_id")[
         [
             "vessel_id",
             "fishing_events",

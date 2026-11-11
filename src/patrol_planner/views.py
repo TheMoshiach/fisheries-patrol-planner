@@ -22,16 +22,18 @@ def decision_log(store: DataStore) -> actions.DecisionLog:
 def patrol_area_ranking(store: DataStore) -> pd.DataFrame:
     """Vessels active in the patrol area, highest risk first, with identity and status."""
     cohort = store.read("cohort_members")
-    patrol_ids = set(cohort.loc[cohort["cohort"] == "patrol_area", "vessel_id"])
-    scores = store.read("risk_scores")
-    ranked = rank_vessels(scores[scores["vessel_id"].isin(patrol_ids)])
+    patrol = cohort.loc[cohort["cohort"] == "patrol_area", ["vessel_id", "window_end"]]
+    patrol = patrol.rename(columns={"window_end": "as_of_date"})
+    # A vessel may also have been scored over another period for the evaluation;
+    # the ranking uses only the score for the patrol window.
+    ranked = rank_vessels(store.read("risk_scores").merge(patrol, on=["vessel_id", "as_of_date"]))
 
     vessels = store.read("vessels")[["vessel_id", "name", "flag", "gear_type", "mmsi", "imo"]]
     features = store.read("vessel_features")[
-        ["vessel_id", "patrol_area_fishing_hours", "ais_coverage_pct", "fishing_events"]
-    ]
+        ["vessel_id", "window_end", "patrol_area_fishing_hours", "ais_coverage_pct", "fishing_events"]
+    ].rename(columns={"window_end": "as_of_date"})
     table = ranked.merge(vessels, on="vessel_id", how="left").merge(
-        features, on="vessel_id", how="left"
+        features, on=["vessel_id", "as_of_date"], how="left"
     )
     table["name"] = table["name"].fillna("(name not reported)")
 
@@ -51,17 +53,18 @@ STATUS_LABELS = {
 }
 
 
-def vessel_reasons(store: DataStore, vessel_id: str) -> pd.DataFrame:
-    """Why a vessel has its score: one row per signal, strongest first."""
+def vessel_reasons(store: DataStore, risk_score_id: str) -> pd.DataFrame:
+    """Why a score is what it is: one row per signal, strongest first."""
     signals = store.read("risk_signals")
-    mine = signals[signals["vessel_id"] == vessel_id]
+    mine = signals[signals["risk_score_id"] == risk_score_id]
     return mine.sort_values("points", ascending=False).reset_index(drop=True)
 
 
 def vessel_events(store: DataStore, vessel_id: str, settings: Settings) -> pd.DataFrame:
     """The individual events behind a vessel's score, newest first, described in words."""
     events = store.read("events")
-    mine = events[events["vessel_id"] == vessel_id].copy()
+    in_window = (events["start_time"] >= settings.window.start) & (events["start_time"] < settings.window.end)
+    mine = events[(events["vessel_id"] == vessel_id) & in_window].copy()
     if mine.empty:
         return mine.assign(description=pd.Series(dtype="string"), counted=pd.Series(dtype="boolean"))
     counted_gaps = set(qualifying_gaps(mine, settings.scoring)["event_id"])
@@ -72,7 +75,7 @@ def vessel_events(store: DataStore, vessel_id: str, settings: Settings) -> pd.Da
             is_counted = row.event_id in counted_gaps
             text = f"AIS off for {row.duration_hours:.0f} h, {row.start_distance_from_shore_km:.0f} km from shore"
             if not is_counted:
-                text += " (too short or too close to shore to count)"
+                text += " (not counted: too short, too long, too near shore, or judged unintentional)"
         elif row.event_type == "encounter":
             is_counted = True
             other = row.other_vessel_name if pd.notna(row.other_vessel_name) else "unidentified vessel"
@@ -104,7 +107,13 @@ def _yes(value) -> bool:
 def evaluation_listed_vessels(store: DataStore) -> pd.DataFrame:
     """Where each IUU-listed vessel landed in the evaluation ranking."""
     table = store.read("evaluation_vessels")
-    vessels = store.read("vessels")[["vessel_id", "name", "flag", "gear_type", "imo"]]
+    vessels = store.read("vessels")[["vessel_id", "name", "flag", "imo"]]
+    # Where each listed vessel stands among the comparison vessels of its own group.
+    group_size = table.groupby("match_group")["vessel_id"].transform("size")
+    table["rank_in_group"] = (
+        table.groupby("match_group")["risk_score"].rank(method="average", ascending=False)
+    )
+    table["group_size"] = group_size
     listed = table[table["iuu_listed"].fillna(False)].merge(vessels, on="vessel_id", how="left")
     listed["percentile"] = (listed["rank"] / len(table) * 100).round(1)
     return listed.sort_values("rank").reset_index(drop=True)

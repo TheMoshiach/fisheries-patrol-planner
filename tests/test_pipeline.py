@@ -25,7 +25,8 @@ def test_every_vessel_gets_exactly_one_score_and_one_row_per_signal(sample_store
     signals = sample_store.read("risk_signals")
     assert set(scores["vessel_id"]) == set(vessels["vessel_id"])
     assert scores["risk_score"].between(0, 100).all()
-    assert signals.groupby("vessel_id").size().eq(len(settings.scoring.weights)).all()
+    assert signals.groupby("risk_score_id").size().eq(len(settings.scoring.weights)).all()
+    assert set(signals["risk_score_id"]) == set(scores["risk_score_id"])
     assert scores["model_version"].nunique() == 1
 
 
@@ -54,7 +55,7 @@ def test_ranking_view_lists_patrol_area_vessels_with_status(sample_store, settin
     assert (ranking["status"] == "Not reviewed").all()
 
     top = ranking.iloc[0]
-    reasons = views.vessel_reasons(sample_store, top["vessel_id"])
+    reasons = views.vessel_reasons(sample_store, top["risk_score_id"])
     assert reasons["points"].sum() == pytest.approx(top["risk_score"], abs=0.05)
     events = views.vessel_events(sample_store, top["vessel_id"], settings)
     assert not events.empty and events["description"].str.len().gt(10).all()

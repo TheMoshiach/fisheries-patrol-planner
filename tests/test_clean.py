@@ -84,7 +84,8 @@ def test_protected_area_activity_splits_inside_and_buffer():
     activity = clean.clean_protected_area_activity(rows).set_index("vessel_id")
     schemas.validate(activity.reset_index(), schemas.PROTECTED_AREA_ACTIVITY)
     assert activity.loc["v1", "fishing_hours_inside"] == 10
-    assert activity.loc["v1", "fishing_hours_within_buffer"] == 25
+    # Buffered rows cover only the ring outside the area, so the two are added.
+    assert activity.loc["v1", "fishing_hours_within_buffer"] == 35
     assert activity.loc["v2", "fishing_hours_inside"] == 0  # only ever near, never inside
     assert activity.loc["v2", "fishing_hours_within_buffer"] == 8
     assert clean.clean_protected_area_activity([]).empty
@@ -97,7 +98,6 @@ INSIGHT = {
         "events": 120, "eventsInNoTakeMPAs": 2, "eventsInRFMOWithoutKnownAuthorization": 1}},
     "coverage": {"percentage": 71.5},
     "vesselIdentity": {
-        "flagsChanges": {"totalTimesListedInThePeriod": 1},
         "iuuVesselList": {"valuesInThePeriod": [{"from": "2025-10-01T00:00:00Z", "to": "2026-03-01T00:00:00Z"}],
                           "totalTimesListed": 1, "totalTimesListedInThePeriod": 1},
     },
@@ -105,7 +105,19 @@ INSIGHT = {
 
 
 def test_insights_and_ground_truth_are_separate_tables():
-    insights = clean.clean_vessel_insights([INSIGHT])
+    identities = [{
+        "selfReportedInfo": [
+            {"id": "v1", "flag": "PAN", "transmissionDateFrom": "2026-02-01T00:00:00Z",
+             "transmissionDateTo": "2026-09-30T00:00:00Z"},
+            {"id": "v1-old", "flag": "BLZ", "transmissionDateFrom": "2019-01-01T00:00:00Z",
+             "transmissionDateTo": "2026-01-31T00:00:00Z"},
+            {"id": "v1-older", "flag": "KHM", "transmissionDateFrom": "2012-01-01T00:00:00Z",
+             "transmissionDateTo": "2018-12-31T00:00:00Z"},  # before the window: not counted
+        ],
+        "registryInfo": [{"flag": "pan", "transmissionDateFrom": "2026-02-01T00:00:00Z",
+                          "transmissionDateTo": "2026-09-30T00:00:00Z"}],
+    }]
+    insights = clean.clean_vessel_insights([INSIGHT], identities)
     listings = clean.clean_iuu_listings([INSIGHT, {"_vessel_id": "v2", "vesselIdentity": {
         "iuuVesselList": {"valuesInThePeriod": [], "totalTimesListed": 0, "totalTimesListedInThePeriod": 0}}}])
     row = insights.iloc[0]
@@ -116,24 +128,38 @@ def test_insights_and_ground_truth_are_separate_tables():
     assert listings["listed_to"].iloc[0] == pd.Timestamp("2026-03-01", tz="UTC")
 
 
-def test_cohorts_keep_only_confirmed_iuu_seeds():
+def test_one_vessel_can_have_indicators_for_two_windows():
+    earlier = {**INSIGHT, "period": {"startDate": "2021-01-01", "endDate": "2022-01-01"}}
+    insights = clean.clean_vessel_insights([INSIGHT, earlier], [])
+    schemas.validate(insights, schemas.VESSEL_INSIGHTS)
+    assert sorted(insights["insight_id"]) == ["v1|2022-01-01", "v1|2026-10-01"]
+
+
+def test_cohorts_keep_only_groups_whose_vessel_is_confirmed_listed():
+    start, end = pd.Timestamp("2025-10-01", tz="UTC"), pd.Timestamp("2026-10-01", tz="UTC")
     report = [
         {"vesselId": "p1", "vesselType": "FISHING", "hours": 30},
         {"vesselId": "p2", "vesselType": "FISHING", "hours": 5},  # below the hours threshold
         {"vesselId": "c9", "vesselType": "CARRIER", "hours": 500},  # not a fishing vessel
     ]
+    group = {"window_start": "2021-03-01", "window_end": "2022-03-01", "vessel_class": "fishing"}
     raw_cohort = [
-        {"vessel_id": "seed_listed", "selection_reason": "iuu_list_seed"},
-        {"vessel_id": "seed_unconfirmed", "selection_reason": "iuu_list_seed"},
-        {"vessel_id": "control", "selection_reason": "random_control"},
+        {"vessel_id": "listed", "selection_reason": "iuu_listed_vessel", "match_group": "listed", **group},
+        {"vessel_id": "control_a", "selection_reason": "matched_control", "match_group": "listed", **group},
+        {"vessel_id": "unconfirmed", "selection_reason": "iuu_listed_vessel", "match_group": "unconfirmed", **group},
+        {"vessel_id": "control_b", "selection_reason": "matched_control", "match_group": "unconfirmed", **group},
     ]
-    listings = clean.clean_iuu_listings([{**INSIGHT, "_vessel_id": "seed_listed"}])
-    cohort = clean.clean_cohort_members(raw_cohort, report, 24.0, listings)
+    listings = clean.clean_iuu_listings([{**INSIGHT, "_vessel_id": "listed"}])
+    cohort = clean.clean_cohort_members(raw_cohort, report, 24.0, listings, start, end)
     schemas.validate(cohort, schemas.COHORT_MEMBERS)
     patrol = cohort[cohort["cohort"] == "patrol_area"]
     evaluation = cohort[cohort["cohort"] == "evaluation"]
     assert patrol["vessel_id"].tolist() == ["p1"]
-    assert set(evaluation["vessel_id"]) == {"seed_listed", "control", "p1"}
+    assert patrol["window_end"].iloc[0] == end
+    # The unconfirmed vessel and the comparison vessels drawn for it are both dropped.
+    assert set(evaluation["vessel_id"]) == {"listed", "control_a"}
+    assert set(evaluation["window_end"]) == {pd.Timestamp("2022-03-01", tz="UTC")}
+    assert set(evaluation["match_group"]) == {"listed"}
 
 
 def test_watched_protected_areas_match_ignoring_accents_and_case():

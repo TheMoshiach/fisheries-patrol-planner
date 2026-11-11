@@ -94,6 +94,15 @@ def test_report_rows_are_flattened_and_the_buffer_is_sent():
         api.fishing_hours_by_vessel("2025-10-01", "2026-10-01")
 
 
+def test_created_status_counts_as_success_and_forbidden_explains_itself():
+    api, _ = client([FakeResponse(status=201, payload={"entries": [{"id": "a"}], "nextOffset": None})])
+    assert api.events_page("gap", "2025-10-01", "2026-10-01")["entries"] == [{"id": "a"}]
+    denied, session = client([FakeResponse(status=403, payload={"detail": "no permission for X"})])
+    with pytest.raises(gfw.GFWError, match="no permission for X"):
+        denied.insights("v1", "2025-10-01", "2026-10-01")
+    assert len(session.calls) == 1
+
+
 @pytest.mark.parametrize("number, valid", [
     ("9074729", True),   # the standard worked example of the IMO check digit
     ("9139610", True),

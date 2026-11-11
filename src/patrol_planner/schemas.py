@@ -88,6 +88,7 @@ EVENTS = TableSchema(
         "in_protected_area": BOOL,
         "in_no_take_area": BOOL,
         "potential_risk": BOOL,  # no matching public RFMO authorisation
+        "intentional_disabling": BOOL,  # gaps only: the source judges the gap deliberate
         "other_vessel_id": STRING,
         "other_vessel_name": STRING,
         "other_vessel_flag": STRING,
@@ -155,7 +156,7 @@ PROTECTED_AREA_ACTIVITY = TableSchema(
 
 VESSEL_INSIGHTS = TableSchema(
     name="vessel_insights",
-    primary_key="vessel_id",
+    primary_key="insight_id",
     object_type="(properties on Vessel)",
     description=(
         "Per-vessel indicators for the window: fishing-event counts, fishing in "
@@ -164,6 +165,7 @@ VESSEL_INSIGHTS = TableSchema(
     ),
     links=(Link("vessel_id", "vessels", "vessel"),),
     columns={
+        "insight_id": STRING,  # vessel_id|window_end
         "vessel_id": STRING,
         "window_start": TIMESTAMP,
         "window_end": TIMESTAMP,
@@ -199,13 +201,21 @@ COHORT_MEMBERS = TableSchema(
     name="cohort_members",
     primary_key="cohort_member_id",
     object_type="(property/set on Vessel)",
-    description="Which vessels belong to the patrol-area cohort and the evaluation cohort.",
+    description=(
+        "Which vessels belong to the patrol-area cohort and the evaluation cohort, and "
+        "the analysis window each is scored over. Evaluation members are grouped: one "
+        "IUU-listed vessel and the comparison vessels drawn from the same period."
+    ),
     links=(Link("vessel_id", "vessels", "vessel"),),
     columns={
         "cohort_member_id": STRING,
         "cohort": STRING,  # patrol_area | evaluation
         "vessel_id": STRING,
-        "selection_reason": STRING,  # active_in_patrol_area | iuu_list_seed | random_control
+        "selection_reason": STRING,  # active_in_patrol_area | iuu_listed_vessel | matched_control
+        "window_start": TIMESTAMP,
+        "window_end": TIMESTAMP,
+        "match_group": STRING,  # evaluation only: id of the listed vessel the group is built around
+        "vessel_class": STRING,  # evaluation only: fishing | support
         "patrol_area_fishing_hours": FLOAT,
     },
 )
@@ -344,6 +354,7 @@ EVALUATION_METRICS = TableSchema(
         "metric_id": STRING,
         "evaluation_run_id": STRING,
         "model_version": STRING,
+        "subset": STRING,  # all | fishing | support
         "scorer": STRING,  # risk_score | baseline:* | signal:*
         "metric": STRING,
         "k": INT,
@@ -357,13 +368,19 @@ EVALUATION_METRICS = TableSchema(
 
 EVALUATION_VESSELS = TableSchema(
     name="evaluation_vessels",
-    primary_key="vessel_id",
+    primary_key="evaluation_vessel_id",
     object_type="(evaluation detail)",
     description="Label and score for each vessel in the evaluation cohort.",
     links=(Link("vessel_id", "vessels", "vessel"),),
     columns={
+        "evaluation_vessel_id": STRING,  # vessel_id|window_end
         "vessel_id": STRING,
+        "window_start": TIMESTAMP,
+        "window_end": TIMESTAMP,
+        "match_group": STRING,
+        "vessel_class": STRING,
         "iuu_listed": BOOL,
+        "listing_timing": STRING,  # listed during window | listed later | listed earlier
         "risk_score": FLOAT,
         "rank": INT,
         "selection_reason": STRING,

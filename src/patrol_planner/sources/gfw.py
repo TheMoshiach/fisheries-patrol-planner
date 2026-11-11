@@ -30,7 +30,9 @@ EVENT_DATASETS = {
     "gap": "public-global-gaps-events:latest",
 }
 PROTECTED_AREA_DATASET = "public-mpa-all"
-INSIGHTS = ("FISHING", "COVERAGE", "VESSEL-IDENTITY-FLAG-CHANGES", "VESSEL-IDENTITY-IUU-VESSEL-LIST")
+# The flag-change indicator is not open to public tokens; flag changes are derived
+# from the vessel identity records instead (see transforms.clean).
+INSIGHTS = ("FISHING", "COVERAGE", "VESSEL-IDENTITY-IUU-VESSEL-LIST")
 
 
 class GFWError(RuntimeError):
@@ -113,13 +115,15 @@ class GFWClient:
                 last_error = f"{type(error).__name__}: {error}"
             else:
                 status = response.status_code
-                if status == 200:
+                if status in (200, 201):
                     return response.json()
-                if status in (401, 403):
+                if status == 401:
                     raise GFWError(
-                        f"Global Fishing Watch rejected the API token (HTTP {status}). "
+                        "Global Fishing Watch rejected the API token (HTTP 401). "
                         "Check GFW_API_TOKEN in the .env file."
                     )
+                if status == 403:
+                    raise GFWError(f"Not permitted (HTTP 403) for {path}: {response.text[:300]}")
                 if status == 429:
                     remaining = response.headers.get("x-ratelimit-daily-remaining-requests")
                     if remaining is not None and remaining.isdigit() and int(remaining) <= 0:
@@ -127,7 +131,10 @@ class GFWClient:
                     last_error = "HTTP 429 (another report is running or the rate limit was hit)"
                     delay = max(delay, 15.0)
                 elif status == 524 and "/4wings/report" in path:
-                    return self._wait_for_report()
+                    finished = self._wait_for_report()
+                    if finished is not None:
+                        return finished
+                    last_error = "the report timed out and could not be collected"
                 elif status >= 500:
                     last_error = f"HTTP {status}"
                 else:
@@ -138,7 +145,10 @@ class GFWClient:
         raise GFWError(f"{method} {path} failed after {self._max_attempts} attempts: {last_error}")
 
     def _wait_for_report(self, poll_seconds: float = 15.0, max_polls: int = 60):
-        """A report that outlives the gateway timeout can be collected once it finishes."""
+        """A report that outlives the gateway timeout can be collected once it finishes.
+
+        Returns None when the finished report is not available, so the caller retries.
+        """
         for _ in range(max_polls):
             time.sleep(poll_seconds)
             self.requests_made += 1
@@ -154,8 +164,8 @@ class GFWClient:
                 continue
             if isinstance(payload, dict) and "entries" in payload:
                 return payload
-            raise GFWError(f"Report failed: {str(payload)[:400]}")
-        raise GFWError("Report did not finish in time.")
+            return None
+        return None
 
     # --- reference data ---------------------------------------------------------
     def protected_area_list(self) -> list[dict]:
@@ -173,7 +183,11 @@ class GFWClient:
         region_dataset: str = PROTECTED_AREA_DATASET,
         buffer_nm: float | None = None,
     ) -> list[dict]:
-        """Apparent fishing hours per vessel inside a polygon or a named region."""
+        """Apparent fishing hours per vessel inside a polygon or a named region.
+
+        With ``buffer_nm`` the result covers only the ring between the region's
+        boundary and that distance from it, not the region itself.
+        """
         if (geojson is None) == (region_id is None):
             raise ValueError("give exactly one of geojson or region_id")
         params = [
@@ -266,7 +280,10 @@ class GFWClient:
         return payload.get("entries") or []
 
     def insights(self, vessel_id: str, start_date: str, end_date: str) -> dict:
-        """Indicators for one vessel: fishing counters, AIS coverage, flag changes, IUU listing."""
+        """Indicators for one vessel: fishing counters, AIS coverage and IUU listing.
+
+        One vessel per request: the API adds the numbers together when given several.
+        """
         body = {
             "includes": list(INSIGHTS),
             "startDate": start_date,

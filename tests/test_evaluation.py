@@ -32,52 +32,89 @@ def test_top_k_treats_ties_as_a_fair_draw():
     assert evaluation.recall_at_k(labels, scores, 5) == 1.0
 
 
-def test_bootstrap_interval_is_reproducible_and_brackets_the_estimate():
+def test_matched_auc_compares_each_listed_vessel_with_its_own_group_only():
+    # Group A scores run high and group B low. Pooled, the listed vessel in B looks
+    # bad; within its own group it is clearly on top.
+    labels = np.array([1, 0, 0, 1, 0, 0], dtype=bool)
+    scores = np.array([90.0, 80, 70, 20, 10, 10])
+    groups = np.array(["a", "a", "a", "b", "b", "b"])
+    assert evaluation.matched_auc(labels, scores, groups) == 1.0
+    assert evaluation.roc_auc(labels, scores) == pytest.approx(0.75)
+    # A tie with a comparison vessel counts as half a win.
+    assert evaluation.matched_auc(labels, np.array([5.0, 5, 1, 9, 1, 1]), groups) == pytest.approx(0.875)
+
+
+def test_group_bootstrap_is_reproducible_and_brackets_the_estimate():
     rng = np.random.default_rng(0)
-    labels = np.array([True] * 20 + [False] * 200)
-    scores = np.where(labels, rng.normal(1.0, 1.0, 220), rng.normal(0.0, 1.0, 220))
-    first = evaluation.bootstrap_interval(evaluation.roc_auc, labels, scores, 300, seed=1)
-    again = evaluation.bootstrap_interval(evaluation.roc_auc, labels, scores, 300, seed=1)
+    groups = np.repeat(np.arange(25), 11)
+    labels = np.tile(np.array([True] + [False] * 10), 25)
+    scores = np.where(labels, rng.normal(1.0, 1.0, 275), rng.normal(0.0, 1.0, 275))
+    first = evaluation.group_bootstrap_interval(evaluation.roc_auc, labels, scores, groups, 300, seed=1)
+    again = evaluation.group_bootstrap_interval(evaluation.roc_auc, labels, scores, groups, 300, seed=1)
     assert first == again
     assert first[0] < evaluation.roc_auc(labels, scores) < first[1]
+    matched = evaluation.matched_auc_interval(labels, scores, groups, 300, seed=1)
+    assert matched == evaluation.matched_auc_interval(labels, scores, groups, 300, seed=1)
+    assert matched[0] < evaluation.matched_auc(labels, scores, groups) < matched[1]
+    assert np.isnan(evaluation.matched_auc_interval(labels[:22], scores[:22], groups[:22], 300, 1)[0])
+    # Too few groups to say anything: no interval rather than a misleading one.
+    few = evaluation.group_bootstrap_interval(evaluation.roc_auc, labels[:22], scores[:22], groups[:22], 300, 1)
+    assert np.isnan(few[0])
 
 
 def _tables(settings):
-    window = settings.window
-    ids = ["listed_a", "listed_b_old_identity", "listed_b", "clean_1", "clean_2", "not_in_cohort"]
-    vessels = schemas.conform(pd.DataFrame({
-        "vessel_id": ids,
-        "imo": [None, "9139610", "9139610", None, None, None],
-        "last_transmission": ["2026-09-01", "2025-11-01", "2026-09-01", "2026-09-01", "2026-09-01", "2026-09-01"],
-    }), schemas.VESSELS)
+    main_end = settings.window.end
+    old_start, old_end = pd.Timestamp("2021-03-01", tz="UTC"), pd.Timestamp("2022-03-01", tz="UTC")
+    ids = ["listed", "control_1", "control_2", "patrol_only"]
     scores = schemas.conform(pd.DataFrame({
-        "risk_score_id": [f"{v}|x" for v in ids], "vessel_id": ids,
-        "risk_score": [60.0, 10.0, 45.0, 5.0, 0.0, 99.0],
+        "risk_score_id": ["listed|a", "control_1|a", "control_2|a", "control_1|main", "patrol_only|main"],
+        "vessel_id": ["listed", "control_1", "control_2", "control_1", "patrol_only"],
+        "as_of_date": [old_end, old_end, old_end, main_end, main_end],
+        "risk_score": [60.0, 5.0, 0.0, 99.0, 50.0],
     }), schemas.RISK_SCORES)
     cohort = schemas.conform(pd.DataFrame({
-        "cohort_member_id": [f"evaluation|{v}" for v in ids[:5]], "cohort": "evaluation",
-        "vessel_id": ids[:5], "selection_reason": ["iuu_list_seed"] * 3 + ["random_control"] * 2,
+        "cohort_member_id": [f"evaluation|{v}" for v in ids[:3]] + ["patrol_area|control_1", "patrol_area|patrol_only"],
+        "cohort": ["evaluation"] * 3 + ["patrol_area"] * 2,
+        "vessel_id": ids[:3] + ["control_1", "patrol_only"],
+        "selection_reason": ["iuu_listed_vessel", "matched_control", "matched_control",
+                             "active_in_patrol_area", "active_in_patrol_area"],
+        "window_start": [old_start] * 3 + [settings.window.start] * 2,
+        "window_end": [old_end] * 3 + [main_end] * 2,
+        "match_group": ["listed"] * 3 + [None, None],
+        "vessel_class": ["fishing"] * 3 + [None, None],
     }), schemas.COHORT_MEMBERS)
     listings = schemas.conform(pd.DataFrame({
-        "listing_id": ["l1", "l2", "l3", "l4"],
-        "vessel_id": ["listed_a", "listed_b_old_identity", "listed_b", "clean_1"],
-        "listed_from": [window.start, window.start, window.start, pd.Timestamp("2015-01-01", tz="UTC")],
-        # clean_1 was delisted long before the window, so it does not count as listed.
-        "listed_to": [window.end, window.end, window.end, pd.Timestamp("2018-01-01", tz="UTC")],
+        "listing_id": ["l1"], "vessel_id": ["listed"],
+        "listed_from": [pd.Timestamp("2021-09-01", tz="UTC")],
+        "listed_to": [pd.Timestamp("2024-01-01", tz="UTC")],
     }), schemas.IUU_LISTINGS)
-    return scores, listings, cohort, vessels
+    return scores, listings, cohort
 
 
-def test_evaluation_table_labels_by_window_and_counts_each_hull_once(settings):
-    table = evaluation.build_evaluation_vessels(*_tables(settings), settings.window)
+def test_evaluation_table_uses_each_vessels_own_window(settings):
+    table = evaluation.build_evaluation_vessels(*_tables(settings))
     schemas.validate(table, schemas.EVALUATION_VESSELS)
     by_id = table.set_index("vessel_id")
-    assert "not_in_cohort" not in by_id.index
-    # Two identities share one IMO number: only the one still transmitting is kept.
-    assert "listed_b" in by_id.index and "listed_b_old_identity" not in by_id.index
-    assert by_id["iuu_listed"].to_dict() == {
-        "listed_a": True, "listed_b": True, "clean_1": False, "clean_2": False}
-    assert by_id.loc["listed_a", "rank"] == 1 and by_id.loc["clean_2", "rank"] == 4
+    assert set(by_id.index) == {"listed", "control_1", "control_2"}
+    # control_1 is also a patrol-area vessel with a different, higher score for the
+    # main window; the evaluation must use the score for the group's window.
+    assert by_id.loc["control_1", "risk_score"] == 5.0
+    assert by_id["iuu_listed"].to_dict() == {"listed": True, "control_1": False, "control_2": False}
+    assert by_id.loc["listed", "listing_timing"] == "listed during window"
+    assert by_id.loc["listed", "rank"] == 1
+
+
+@pytest.mark.parametrize("first, last, expected", [
+    ("2023-01-01", "2024-01-01", "listed later"),
+    ("2018-01-01", "2020-06-01", "listed earlier"),
+    ("2018-01-01", "2021-06-01", "listed during window"),
+    (None, None, "listing dates unknown"),
+])
+def test_listing_timing_relative_to_the_scored_window(first, last, expected):
+    start, end = pd.Timestamp("2021-03-01", tz="UTC"), pd.Timestamp("2022-03-01", tz="UTC")
+    stamp = lambda text: pd.Timestamp(text, tz="UTC") if text else pd.NaT
+    assert evaluation._timing(True, start, end, stamp(first), stamp(last)) == expected
+    assert evaluation._timing(False, start, end, stamp(first), stamp(last)) is None
 
 
 def test_metrics_cover_the_score_baselines_and_each_signal(sample_store, settings):
@@ -86,11 +123,16 @@ def test_metrics_cover_the_score_baselines_and_each_signal(sample_store, setting
     scorers = set(metrics["scorer"])
     assert {"risk_score", "baseline:activity", "baseline:random"} <= scorers
     assert {f"signal:{s}" for s in settings.scoring.weights} <= scorers
-    auc = metrics[(metrics["scorer"] == "risk_score") & (metrics["metric"] == "roc_auc")].iloc[0]
-    assert auc["ci_low"] <= auc["value"] <= auc["ci_high"]
-    assert auc["n_positive"] > 0 and auc["n_vessels"] > auc["n_positive"]
-    random_auc = metrics[(metrics["scorer"] == "baseline:random") & (metrics["metric"] == "roc_auc")]
+    assert set(metrics["subset"]) == {"all", "fishing", "support"}
+    everyone = metrics[metrics["subset"] == "all"]
+    for metric in ("roc_auc", "matched_auc"):
+        auc = everyone[(everyone["scorer"] == "risk_score") & (everyone["metric"] == metric)].iloc[0]
+        assert auc["ci_low"] <= auc["value"] <= auc["ci_high"]
+        assert auc["n_positive"] > 0 and auc["n_vessels"] > auc["n_positive"]
+    random_auc = everyone[(everyone["scorer"] == "baseline:random") & (everyone["metric"] == "roc_auc")]
     assert random_auc["value"].iloc[0] == 0.5
+    counts = metrics.drop_duplicates("subset").set_index("subset")["n_vessels"]
+    assert counts["fishing"] + counts["support"] == counts["all"]
 
 
 def test_scores_do_not_depend_on_the_ground_truth(sample_store, settings, tmp_path):
@@ -113,8 +155,10 @@ def test_scores_do_not_depend_on_the_ground_truth(sample_store, settings, tmp_pa
     pipeline.run_features(other, settings)
     pipeline.run_scores(other, settings)
 
-    original = sample_store.read("risk_scores").set_index("vessel_id")["risk_score"]
-    rebuilt = other.read("risk_scores").set_index("vessel_id")["risk_score"]
+    # With no vessel confirmed as listed the evaluation groups disappear, so the
+    # comparison is made on the patrol-area vessels, which are unaffected.
+    original = sample_store.read("risk_scores").set_index("risk_score_id")["risk_score"]
+    rebuilt = other.read("risk_scores").set_index("risk_score_id")["risk_score"]
     shared = rebuilt.index.intersection(original.index)
     assert len(shared) > 100
     pd.testing.assert_series_equal(original.loc[shared].sort_index(), rebuilt.loc[shared].sort_index())

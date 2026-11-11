@@ -185,6 +185,7 @@ def clean_events(raw_events: Iterable[dict]) -> pd.DataFrame:
             "in_protected_area": bool(_protected_area_ids(regions)),
             "in_no_take_area": bool(regions.get("mpaNoTake")),
             "potential_risk": bool(detail.get("potentialRisk")),
+            "intentional_disabling": detail.get("intentionalDisabling") if event_type == "gap" else None,
             "other_vessel_id": _text(other.get("id")),
             "other_vessel_name": _upper(other.get("name")),
             "other_vessel_flag": _upper(other.get("flag")),
@@ -274,7 +275,13 @@ def clean_protected_areas(
 
 
 def clean_protected_area_activity(raw_protected_area_reports: Iterable[dict]) -> pd.DataFrame:
-    """Fishing hours per vessel inside each watched area and inside its buffer."""
+    """Fishing hours per vessel inside each watched area and inside its buffer.
+
+    The source reports two things per area: hours inside it (rows with no buffer)
+    and hours in the ring between its boundary and the buffer distance (rows with
+    a buffer). The ring does not include the area itself, so the two are added to
+    get the hours within the buffered area.
+    """
     rows = []
     for row in raw_protected_area_reports:
         vessel_id = _text(row.get("vesselId") or row.get("vessel_id"))
@@ -297,15 +304,12 @@ def clean_protected_area_activity(raw_protected_area_reports: Iterable[dict]) ->
     frame = pd.DataFrame(rows)
     keys = ["vessel_id", "protected_area_id", "window_start", "window_end"]
     inside = frame[frame["buffer"] == 0].groupby(keys)["hours"].sum().rename("fishing_hours_inside")
-    buffered = frame[frame["buffer"] > 0].groupby(keys).agg(
-        fishing_hours_within_buffer=("hours", "sum"), buffer_nm=("buffer", "max")
+    ring = frame[frame["buffer"] > 0].groupby(keys).agg(
+        ring_hours=("hours", "sum"), buffer_nm=("buffer", "max")
     )
-    out = pd.concat([inside, buffered], axis=1).reset_index()
+    out = pd.concat([inside, ring], axis=1).reset_index()
     out["fishing_hours_inside"] = out["fishing_hours_inside"].fillna(0.0)
-    # The buffered region contains the area itself, so it can never hold fewer hours.
-    out["fishing_hours_within_buffer"] = (
-        out["fishing_hours_within_buffer"].fillna(0.0).clip(lower=out["fishing_hours_inside"])
-    )
+    out["fishing_hours_within_buffer"] = out["fishing_hours_inside"] + out["ring_hours"].fillna(0.0)
     out["buffer_nm"] = out["buffer_nm"].fillna(0.0)
     window_end = pd.to_datetime(out["window_end"], utc=True).dt.strftime("%Y-%m-%d")
     out["activity_id"] = out["vessel_id"] + "|" + out["protected_area_id"] + "|" + window_end
@@ -314,18 +318,58 @@ def clean_protected_area_activity(raw_protected_area_reports: Iterable[dict]) ->
 
 
 # --- insights and ground truth -----------------------------------------------
-def clean_vessel_insights(raw_insights: Iterable[dict]) -> pd.DataFrame:
-    """Per-vessel indicators. The IUU-list indicator is deliberately left out here."""
+def flag_changes_by_vessel(
+    raw_vessel_identities: Iterable[dict], window_start: pd.Timestamp, window_end: pd.Timestamp
+) -> dict[str, int]:
+    """Number of flag changes per vessel id during the window.
+
+    An identity record groups every AIS identity and registry entry known for one
+    hull. The flags in force during the window are those on entries whose dates
+    overlap it; one flag means no change, two flags mean one change, and so on.
+    """
+    changes: dict[str, int] = {}
+    for entry in raw_vessel_identities:
+        records = list(entry.get("selfReportedInfo") or []) + list(entry.get("registryInfo") or [])
+        flags = set()
+        for record in records:
+            first = pd.to_datetime(record.get("transmissionDateFrom"), utc=True, errors="coerce")
+            last = pd.to_datetime(record.get("transmissionDateTo"), utc=True, errors="coerce")
+            flag = _upper(record.get("flag"))
+            if flag and pd.notna(first) and pd.notna(last) and first < window_end and last >= window_start:
+                flags.add(flag)
+        for info in entry.get("selfReportedInfo") or []:
+            vessel_id = _text(info.get("id"))
+            if vessel_id:
+                changes[vessel_id] = max(changes.get(vessel_id, 0), len(flags) - 1, 0)
+    return changes
+
+
+def clean_vessel_insights(
+    raw_insights: Iterable[dict], raw_vessel_identities: Iterable[dict]
+) -> pd.DataFrame:
+    """Per-vessel indicators for one analysis window each.
+
+    A vessel has one row per window it was analysed over. The IUU-list indicator
+    is deliberately left out here: it is the ground truth, not a feature.
+    """
+    identities = list(raw_vessel_identities)
+    flag_changes: dict[tuple, dict[str, int]] = {}
     rows: dict[str, dict] = {}
     for record in raw_insights:
         vessel_id = _text(record.get("_vessel_id"))
-        if not vessel_id:
-            continue
         period = record.get("period") or {}
+        if not vessel_id or not period.get("endDate"):
+            continue
+        bounds = (str(period.get("startDate"))[:10], str(period.get("endDate"))[:10])
+        if bounds not in flag_changes:
+            flag_changes[bounds] = flag_changes_by_vessel(
+                identities, pd.Timestamp(bounds[0], tz="UTC"), pd.Timestamp(bounds[1], tz="UTC")
+            )
         fishing = (record.get("apparentFishing") or {}).get("periodSelectedCounters") or {}
         coverage = record.get("coverage") or {}
-        flags = (record.get("vesselIdentity") or {}).get("flagsChanges") or {}
-        rows[vessel_id] = {
+        key = f"{vessel_id}|{bounds[1]}"
+        rows[key] = {
+            "insight_id": key,
             "vessel_id": vessel_id,
             "window_start": period.get("startDate"),
             "window_end": period.get("endDate"),
@@ -333,14 +377,18 @@ def clean_vessel_insights(raw_insights: Iterable[dict]) -> pd.DataFrame:
             "no_take_fishing_events": fishing.get("eventsInNoTakeMPAs"),
             "unauthorized_fishing_events": fishing.get("eventsInRFMOWithoutKnownAuthorization"),
             "ais_coverage_pct": coverage.get("percentage"),
-            "flag_changes": flags.get("totalTimesListedInThePeriod"),
+            "flag_changes": flag_changes[bounds].get(vessel_id, 0),
             "source": GFW,
         }
     return _frame(list(rows.values()), schemas.VESSEL_INSIGHTS)
 
 
 def clean_iuu_listings(raw_insights: Iterable[dict]) -> pd.DataFrame:
-    """Ground truth: one row per period a vessel spent on an RFMO IUU vessel list."""
+    """Ground truth: one row per period a vessel spent on an RFMO IUU vessel list.
+
+    A vessel with any row here has been IUU-listed at some point in the source's
+    history. When the source reports a listing without dates, the dates stay empty.
+    """
     rows: dict[str, dict] = {}
     for record in raw_insights:
         vessel_id = _text(record.get("_vessel_id"))
@@ -348,8 +396,7 @@ def clean_iuu_listings(raw_insights: Iterable[dict]) -> pd.DataFrame:
         if not vessel_id or not listing:
             continue
         periods = listing.get("valuesInThePeriod") or []
-        in_period = int(listing.get("totalTimesListedInThePeriod") or 0)
-        if not periods and in_period > 0:
+        if not periods and int(listing.get("totalTimesListed") or 0) > 0:
             periods = [{}]
         for index, period in enumerate(periods):
             start = _text(period.get("from"))
@@ -371,17 +418,19 @@ def clean_cohort_members(
     raw_patrol_area_report: Iterable[dict],
     min_fishing_hours: float,
     iuu_listings: pd.DataFrame,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
 ) -> pd.DataFrame:
-    """Patrol-area cohort (fishing vessels active in the box) and evaluation cohort.
+    """Patrol-area cohort and evaluation cohort.
 
-    Every patrol-area vessel is also in the evaluation cohort, next to the random
-    comparison vessels and the vessels found through official IUU lists.
+    The patrol-area cohort is every fishing vessel with enough apparent fishing
+    hours inside the box, scored over the main analysis window.
 
-    A vessel found through an IUU list is kept only when the ground-truth table
-    confirms a listing. The lists are searched by IMO number, and a number can
-    belong to a vessel that was since delisted or that merely shares the number;
-    such vessels are neither reliable positives nor fair negatives, so they are
-    left out rather than guessed at.
+    The evaluation cohort is made of groups: one vessel found through an official
+    IUU list plus comparison vessels drawn from the same months, all scored over
+    that group's own window. A group is kept only when the ground-truth table
+    confirms its vessel was IUU-listed: the lists are searched by IMO number, and a
+    number alone cannot tell a listed vessel from one that merely shares it.
     """
     confirmed = set(iuu_listings["vessel_id"].dropna())
     hours: dict[str, float] = {}
@@ -390,32 +439,44 @@ def clean_cohort_members(
         vessel_type = _lower(row.get("vesselType") or row.get("vessel_type"))
         if vessel_id and vessel_type == "fishing":
             hours[vessel_id] = hours.get(vessel_id, 0.0) + float(row.get("hours") or 0.0)
-    patrol = {v: h for v, h in hours.items() if h >= min_fishing_hours}
 
     rows: dict[str, dict] = {}
+    for vessel_id in sorted(v for v, h in hours.items() if h >= min_fishing_hours):
+        key = f"patrol_area|{vessel_id}|{window_end:%Y-%m-%d}"
+        rows[key] = {
+            "cohort_member_id": key,
+            "cohort": "patrol_area",
+            "vessel_id": vessel_id,
+            "selection_reason": "active_in_patrol_area",
+            "window_start": window_start,
+            "window_end": window_end,
+            "patrol_area_fishing_hours": hours[vessel_id],
+        }
 
-    def add(cohort: str, vessel_id: str, reason: str) -> None:
-        key = f"{cohort}|{vessel_id}"
-        if key not in rows:
-            rows[key] = {
-                "cohort_member_id": key,
-                "cohort": cohort,
-                "vessel_id": vessel_id,
-                "selection_reason": reason,
-                "patrol_area_fishing_hours": patrol.get(vessel_id),
-            }
-
-    # Seeds first so that a vessel found both ways keeps the more specific reason.
-    ordered = sorted(raw_cohort, key=lambda r: r.get("selection_reason") != "iuu_list_seed")
-    for record in ordered:
-        vessel_id = _text(record.get("vessel_id"))
-        reason = _text(record.get("selection_reason")) or "unknown"
-        if not vessel_id or (reason == "iuu_list_seed" and vessel_id not in confirmed):
+    records = [r for r in raw_cohort if _text(r.get("vessel_id")) and _text(r.get("match_group"))]
+    kept_groups = {
+        r["match_group"]
+        for r in records
+        if r.get("selection_reason") == "iuu_listed_vessel" and r["vessel_id"] in confirmed
+    }
+    for record in records:
+        if record["match_group"] not in kept_groups:
             continue
-        add("evaluation", vessel_id, reason)
-    for vessel_id in sorted(patrol):
-        add("patrol_area", vessel_id, "active_in_patrol_area")
-        add("evaluation", vessel_id, "active_in_patrol_area")
+        end = pd.to_datetime(record.get("window_end"), utc=True)
+        key = f"evaluation|{record['vessel_id']}|{end:%Y-%m-%d}"
+        rows.setdefault(
+            key,
+            {
+                "cohort_member_id": key,
+                "cohort": "evaluation",
+                "vessel_id": record["vessel_id"],
+                "selection_reason": _text(record.get("selection_reason")),
+                "window_start": record.get("window_start"),
+                "window_end": end,
+                "match_group": record["match_group"],
+                "vessel_class": _lower(record.get("vessel_class")),
+            },
+        )
     return _frame(list(rows.values()), schemas.COHORT_MEMBERS)
 
 

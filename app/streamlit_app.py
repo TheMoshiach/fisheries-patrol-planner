@@ -235,7 +235,7 @@ with tab_ranking:
         why, act = st.columns([3, 2])
         with why:
             st.markdown("**Why this vessel ranks here**")
-            reasons = views.vessel_reasons(store, vessel_id)
+            reasons = views.vessel_reasons(store, selected["risk_score_id"])
             for reason in reasons.itertuples(index=False):
                 marker = "🔴" if reason.points >= 10 else ("🟠" if reason.points > 0 else "⚪")
                 st.markdown(
@@ -381,35 +381,70 @@ with tab_accuracy:
     if metrics.empty:
         st.info("No evaluation results yet.")
     else:
-        first = metrics.iloc[0]
+        summary = reporting.cohort_summary(metrics).set_index("Subset")
+        total = summary.loc["All vessels together"]
+        fishing = summary.loc["Fishing vessels"]
         st.markdown(
-            f"The score is checked against vessels that appear on **official IUU vessel lists** "
-            f"published by regional fisheries bodies. The evaluation cohort has "
-            f"**{int(first['n_vessels'])} vessels**, of which **{int(first['n_positive'])}** were "
-            f"listed during the analysis window. The listing is never shown to the scoring step."
+            "The score is checked against vessels that appear on **official IUU vessel lists** "
+            "published by regional fisheries bodies. Listed vessels mostly stop broadcasting AIS, "
+            "so each one is scored over **its own last year on AIS** and compared with vessels of "
+            "the same broad class drawn at random from **the same months**. "
+            f"That gives **{int(total['IUU-listed'])} listed vessels** among "
+            f"**{int(total['Vessels'])}**, of which **{int(fishing['IUU-listed'])} are fishing "
+            "vessels**, the kind this score is built to rank. The listing is never shown to the "
+            "scoring step."
         )
-        auc = metrics[(metrics["scorer"] == "risk_score") & (metrics["metric"] == "roc_auc")].iloc[0]
-        st.metric(
-            "Chance a listed vessel outranks an unlisted one (ROC AUC)",
+        auc = metrics[
+            (metrics["subset"] == "fishing") & (metrics["scorer"] == "risk_score")
+            & (metrics["metric"] == "matched_auc")
+        ].iloc[0]
+        interval = (
+            f"plausible range {auc['ci_low']:.2f} to {auc['ci_high']:.2f}"
+            if pd.notna(auc["ci_low"]) else "range not available"
+        )
+        left, right = st.columns([2, 3])
+        left.metric(
+            "Fishing vessels: chance a listed vessel outranks a comparison vessel from the same months",
             f"{auc['value']:.2f}",
-            help="0.5 is no better than chance, 1.0 is perfect.",
+            help="Matched AUC. 0.5 is no better than chance, 1.0 is perfect.",
         )
-        st.markdown("**Against simple baselines and each signal on its own**")
-        st.table(reporting.headline_table(metrics).set_index("Ranking"))
-        st.markdown("**If you could only check the top of the list**")
-        st.table(reporting.top_k_table(metrics).set_index("Top k"))
+        left.caption(
+            f"{interval} (95%, resampling whole groups). With this few listed vessels the range "
+            "is itself unreliable; read the table of individual vessels below."
+        )
+        right.table(summary)
+        for subset, title in reporting.SUBSET_NAMES.items():
+            table = reporting.headline_table(metrics, subset)
+            if table.empty or summary.loc[title, "IUU-listed"] == 0:
+                continue
+            st.markdown(f"**{title}: the score against simple baselines and each signal alone**")
+            if subset == "support":
+                st.caption(reporting.SUPPORT_CAVEAT)
+            st.table(table.set_index("Ranking"))
+        st.markdown("**Fishing vessels: how many listed vessels sit near the top of the ranking**")
+        st.table(reporting.top_k_table(metrics, "fishing").set_index("Top k"))
         listed = views.evaluation_listed_vessels(store)
-        with st.expander(f"Where the {len(listed)} listed vessels landed"):
+        with st.expander(f"Where each of the {len(listed)} listed vessels landed"):
             st.dataframe(
-                listed[["rank", "percentile", "name", "flag", "gear_type", "risk_score", "selection_reason"]],
-                column_config={"percentile": "Top % of ranking", "selection_reason": "How it entered the cohort"},
+                listed[["name", "flag", "vessel_class", "window_start", "window_end", "listing_timing",
+                        "risk_score", "rank_in_group", "group_size", "rank"]],
+                column_config={
+                    "name": "Vessel", "flag": "Flag", "vessel_class": "Class",
+                    "window_start": st.column_config.DatetimeColumn("Scored from", format="YYYY-MM-DD"),
+                    "window_end": st.column_config.DatetimeColumn("Scored to", format="YYYY-MM-DD"),
+                    "listing_timing": "Listing vs. window", "risk_score": "Risk score",
+                    "rank_in_group": "Rank in its group", "group_size": "Group size",
+                    "rank": "Rank overall",
+                },
                 hide_index=True, width="stretch",
             )
         st.caption(
-            "Limits: few listed vessels broadcast AIS, so the numbers are uncertain (see the ranges); "
-            "an unlisted vessel is not proven innocent, so precision is a lower bound; and listing "
-            "reflects past conduct, so this measures whether the score separates listed from "
-            "unlisted vessels, not whether it predicts a future listing. See the README."
+            "Limits: only a handful of listed vessels have usable AIS history, so every number here "
+            "is uncertain (see the ranges); an unlisted vessel is not proven innocent; most listed "
+            "vessels were already listed while being scored, so this measures whether the score "
+            "separates listed from unlisted vessels, not whether it predicts a future listing; and "
+            "the share of listed vessels is set by the study design, so 'found in the top k' does "
+            "not translate into a hit rate at sea. See the README."
         )
 
 # --- data ---------------------------------------------------------------------------

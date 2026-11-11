@@ -62,6 +62,7 @@ class ScoringSettings:
     half_points: dict[str, float]
     gap_min_hours: float
     gap_min_distance_from_shore_km: float
+    gap_max_hours: float
     tier_high: float
     tier_elevated: float
 
@@ -74,6 +75,7 @@ class ScoringSettings:
                 self.half_points,
                 self.gap_min_hours,
                 self.gap_min_distance_from_shore_km,
+                self.gap_max_hours,
                 self.tier_high,
                 self.tier_elevated,
             ],
@@ -84,7 +86,9 @@ class ScoringSettings:
 
 @dataclass(frozen=True)
 class EvaluationSettings:
-    control_vessels: int
+    controls_per_case: int
+    history_start: pd.Timestamp
+    min_positions: int
     random_seed: int
     bootstrap_samples: int
     top_k: tuple[int, ...]
@@ -147,11 +151,14 @@ def parse_settings(raw: dict) -> Settings:
             gap_min_distance_from_shore_km=float(
                 scoring["gap_rule"]["min_distance_from_shore_km"]
             ),
+            gap_max_hours=float(scoring["gap_rule"]["max_hours"]),
             tier_high=float(scoring["tiers"]["high"]),
             tier_elevated=float(scoring["tiers"]["elevated"]),
         ),
         evaluation=EvaluationSettings(
-            control_vessels=int(evaluation["control_vessels"]),
+            controls_per_case=int(evaluation["controls_per_case"]),
+            history_start=pd.Timestamp(evaluation["history_start"], tz="UTC"),
+            min_positions=int(evaluation["min_positions"]),
             random_seed=int(evaluation["random_seed"]),
             bootstrap_samples=int(evaluation["bootstrap_samples"]),
             top_k=tuple(int(k) for k in evaluation["top_k"]),

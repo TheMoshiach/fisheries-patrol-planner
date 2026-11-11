@@ -30,6 +30,9 @@ def test_only_long_offshore_gaps_inside_the_window_count(settings):
         raw_event("before_window", start="2024-01-01T00:00:00Z", end="2024-01-05T00:00:00Z", shore_km=300),
         raw_event("in_mpa", start="2026-04-01T00:00:00Z", end="2026-04-01T12:00:00Z", shore_km=100,
                   regions={"mpa": ["11753"]}),
+        raw_event("laid_up", start="2026-05-01T00:00:00Z", end="2026-08-01T00:00:00Z", shore_km=300),
+        raw_event("unintentional", start="2026-09-01T00:00:00Z", end="2026-09-02T00:00:00Z",
+                  shore_km=300, detail={"intentionalDisabling": False}),
     ]
     row = build(raw, settings).loc["v1"]
     assert row["gap_events"] == 2
@@ -142,7 +145,7 @@ def test_settings_reject_weights_that_do_not_sum_to_one():
                         "watched_protected_areas": [], "buffer_nm": 12},
         "scoring": {"model_version": "t", "weights": {s: 0.3 for s in SIGNALS},
                     "half_points": {s: 1 for s in SIGNALS},
-                    "gap_rule": {"min_hours": 12, "min_distance_from_shore_km": 92.6},
+                    "gap_rule": {"min_hours": 12, "min_distance_from_shore_km": 92.6, "max_hours": 720},
                     "tiers": {"high": 40, "elevated": 20}},
         "evaluation": {"control_vessels": 1, "random_seed": 1, "bootstrap_samples": 1, "top_k": [1]},
     }

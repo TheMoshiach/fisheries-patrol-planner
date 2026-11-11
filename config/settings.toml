@@ -15,7 +15,7 @@ bbox = [-97.0, -6.0, -84.0, 5.0]
 min_fishing_hours = 24.0
 # Protected areas the officer is responsible for. Matched by name, ignoring
 # accents and case, against the Global Fishing Watch protected-area list.
-watched_protected_areas = ["Galapagos Marine Reserve", "Hermandad"]
+watched_protected_areas = ["Galapagos - Reserva Marina", "Hermandad - Reserva Marina"]
 # "Near" a watched protected area means within this many nautical miles of it.
 buffer_nm = 12.0
 
@@ -45,14 +45,22 @@ identity_changes = 2.0
 # (Global Fishing Watch's published reliability thresholds).
 min_hours = 12.0
 min_distance_from_shore_km = 92.6  # 50 nautical miles
+# Gaps longer than this (30 days) are ignored: the vessel was more likely laid up,
+# or came back under a new AIS identity, than hiding at sea.
+max_hours = 720.0
 
 [scoring.tiers]
 high = 40.0
 elevated = 20.0
 
 [evaluation]
-# Number of randomly sampled fishing vessels used as the comparison group.
-control_vessels = 600
+# Each IUU-listed vessel is compared with this many vessels of the same broad
+# class, drawn at random from the same months.
+controls_per_case = 30
+# The source's per-vessel indicators start on this date, so history cannot go further back.
+history_start = "2020-01-01"
+# A listed vessel needs at least this many AIS positions to be evaluated at all.
+min_positions = 500
 random_seed = 20261001
 bootstrap_samples = 2000
 top_k = [10, 25, 50, 100]

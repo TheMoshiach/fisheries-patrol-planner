@@ -5,9 +5,12 @@ Nothing here interprets the data: records are stored as received (plus a few
 happens in ``transforms.clean``.
 
 Which vessels are fetched
-    patrol area   every fishing vessel with apparent fishing hours in the box
-    IUU seeds     vessels whose IMO number appears on an official IUU list
-    controls      fishing vessels drawn at random from worldwide fishing events
+    patrol area     every fishing vessel with apparent fishing hours in the box,
+                    over the main analysis window
+    listed vessels  vessels whose IMO number appears on an official IUU list,
+                    each over its own last year on AIS
+    controls        for each listed vessel, vessels of the same broad class drawn
+                    at random from worldwide events in the same months
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from .gfw import ATTRIBUTION, EVENT_DATASETS, GFWClient, GFWError
 BATCH = 20  # vessels per events / identity request
 MAX_FLAGGED_EVENTS_PER_VESSEL = 20
 MAX_WATCHED_AREAS = 8
+MIN_WINDOW_DAYS = 30
 WORKERS = 4
 
 
@@ -81,30 +85,38 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
     seeds = iuu_lists.fetch_seed_imos(log=log)
     store.write_raw("iuu_seed_imos", seeds)
     identities: dict[str, dict] = {}
-    seed_ids: list[str] = []
+    cases: list[dict] = []
     for imo in sorted({record["imo"] for record in seeds}):
-        for entry in client.search_vessels(f'imo="{imo}"'):
-            for vessel_id in _identities_in_window(entry, window.start, window.end):
-                identities[vessel_id] = entry
-                seed_ids.append(vessel_id)
-    seed_ids = sorted(set(seed_ids))
-    log(f"  {len(seed_ids)} vessel identities transmitted AIS during the window")
+        entries = client.search_vessels(f'imo="{imo}"')
+        case = _best_identity(entries, imo, settings)
+        if case:
+            identities[case["vessel_id"]] = case.pop("_entry")
+            cases.append(case)
+    log(f"  {len(cases)} listed hulls have a usable AIS history since "
+        f"{settings.evaluation.history_start:%Y-%m-%d}")
 
-    log("5/8 Random comparison vessels")
-    control_ids = _random_fishing_vessels(
-        client,
-        start,
-        end,
-        wanted=settings.evaluation.control_vessels,
-        exclude=set(patrol_ids) | set(seed_ids),
-        seed=settings.evaluation.random_seed,
-    )
-    log(f"  {len(control_ids)} vessels")
-
-    cohort = [{"vessel_id": v, "selection_reason": "iuu_list_seed"} for v in seed_ids]
-    cohort += [{"vessel_id": v, "selection_reason": "random_control"} for v in control_ids]
+    log("5/8 Comparison vessels from the same months")
+    rng = np.random.default_rng(settings.evaluation.random_seed)
+    cohort: list[dict] = []
+    taken = {case["vessel_id"] for case in cases}
+    for case in cases:
+        cohort.append({**case, "selection_reason": "iuu_listed_vessel"})
+        controls = _random_vessels(
+            client, case["vessel_class"], case["window_start"], case["window_end"],
+            wanted=settings.evaluation.controls_per_case, exclude=taken, rng=rng,
+        )
+        taken.update(controls)
+        cohort.extend(
+            {**case, "vessel_id": v, "imo": None, "selection_reason": "matched_control"}
+            for v in controls
+        )
     store.write_raw("cohort", cohort)
-    all_ids = sorted(set(patrol_ids) | set(seed_ids) | set(control_ids))
+    log(f"  {len(cohort) - len(cases)} comparison vessels in {len(cases)} groups")
+
+    # Every (vessel, window) pair that needs events and indicators.
+    jobs = [(v, start, end) for v in patrol_ids]
+    jobs += [(r["vessel_id"], r["window_start"], r["window_end"]) for r in cohort]
+    all_ids = sorted({job[0] for job in jobs})
 
     log(f"6/8 Identity records for {len(all_ids)} vessels")
     missing = [v for v in all_ids if v not in identities]
@@ -116,15 +128,19 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
     store.write_raw("vessel_identities", _unique(identities.values()))
 
     log("7/8 AIS gaps and encounters")
+    by_window: dict[tuple[str, str], list[str]] = {}
+    for vessel_id, w_start, w_end in jobs:
+        by_window.setdefault((w_start, w_end), []).append(vessel_id)
     events: list[dict] = []
     for event_type in ("gap", "encounter"):
         before = len(events)
-        for batch in _batches(all_ids, BATCH):
-            events.extend(client.iter_events(event_type, start, end, batch))
+        for (w_start, w_end), ids in by_window.items():
+            for batch in _batches(sorted(set(ids)), BATCH):
+                events.extend(client.iter_events(event_type, w_start, w_end, batch))
         log(f"  {len(events) - before} {event_type} events")
 
     log("8/8 Vessel indicators, flagged fishing events and last known positions")
-    insights = _parallel(lambda v: _try_insights(client, v, start, end), all_ids)
+    insights = _parallel(lambda job: _try_insights(client, *job), jobs)
     failed = sum(1 for record in insights if "_error" in record)
     if failed:
         log(f"  indicators unavailable for {failed} vessels")
@@ -172,56 +188,104 @@ def _patrol_area_vessels(report_rows: list[dict], min_hours: float) -> list[str]
     return sorted(v for v, h in hours.items() if h >= min_hours)
 
 
-def _identities_in_window(entry: dict, start: pd.Timestamp, end: pd.Timestamp) -> list[str]:
-    """Vessel ids on an identity record whose AIS transmissions overlap the window."""
-    ids = []
-    for info in entry.get("selfReportedInfo") or []:
-        first = pd.to_datetime(info.get("transmissionDateFrom"), utc=True, errors="coerce")
-        last = pd.to_datetime(info.get("transmissionDateTo"), utc=True, errors="coerce")
-        if info.get("id") and pd.notna(first) and pd.notna(last) and first < end and last >= start:
-            ids.append(info["id"])
-    return ids
+def _best_identity(entries: list[dict], imo: str, settings: Settings) -> dict | None:
+    """Pick the AIS identity of a hull to evaluate, and the window to evaluate it over.
 
-
-def _random_fishing_vessels(
-    client: GFWClient, start: str, end: str, wanted: int, exclude: set[str], seed: int
-) -> list[str]:
-    """Draw vessels by sampling random days of worldwide apparent fishing events.
-
-    A vessel's chance of being drawn grows with how often it fishes, so the
-    comparison group is weighted towards active vessels.
+    A hull can appear under several names and MMSIs. The identity with the longest
+    stretch of AIS inside the usable history is chosen (the most recent one on a
+    tie), and it is analysed over its last twelve months of transmission.
     """
-    rng = np.random.default_rng(seed)
+    history_start = settings.evaluation.history_start
+    latest = settings.window.end
+    best = None
+    for entry in entries:
+        classes = {
+            source.get("vesselId"): {str(t.get("name", "")).upper() for t in source.get("shiptypes") or []}
+            for source in entry.get("combinedSourcesInfo") or []
+        }
+        for info in entry.get("selfReportedInfo") or []:
+            first = pd.to_datetime(info.get("transmissionDateFrom"), utc=True, errors="coerce")
+            last = pd.to_datetime(info.get("transmissionDateTo"), utc=True, errors="coerce")
+            if not info.get("id") or pd.isna(first) or pd.isna(last):
+                continue
+            if int(info.get("positionsCounter") or 0) < settings.evaluation.min_positions:
+                continue
+            window_end = min(last, latest).normalize()
+            window_start = max(window_end - pd.DateOffset(months=12), first.normalize(), history_start)
+            days = (window_end - window_start).days
+            if days < MIN_WINDOW_DAYS:
+                continue
+            candidate = (days, window_end)
+            if best is None or candidate > best[0]:
+                is_fishing = "FISHING" in classes.get(info["id"], set())
+                best = (
+                    candidate,
+                    {
+                        "vessel_id": info["id"],
+                        "imo": imo,
+                        "match_group": info["id"],
+                        "vessel_class": "fishing" if is_fishing else "support",
+                        "window_start": window_start.strftime("%Y-%m-%d"),
+                        "window_end": window_end.strftime("%Y-%m-%d"),
+                        "_entry": entry,
+                    },
+                )
+    return best[1] if best else None
+
+
+def _random_vessels(
+    client: GFWClient,
+    vessel_class: str,
+    start: str,
+    end: str,
+    wanted: int,
+    exclude: set[str],
+    rng: np.random.Generator,
+) -> list[str]:
+    """Draw vessels of one class from random days of worldwide events in a period.
+
+    Fishing vessels are drawn from apparent fishing events; support vessels
+    (carriers, bunkers and the like) from the non-fishing side of encounters. A
+    vessel's chance of being drawn grows with how active it is.
+    """
+    event_type = "fishing" if vessel_class == "fishing" else "encounter"
     days = pd.date_range(start, end, freq="D", inclusive="left")
     chosen: list[str] = []
     seen = set(exclude)
-    attempts = 0
-    while len(chosen) < wanted and attempts < wanted:
-        attempts += 1
+    for _ in range(wanted * 4):
+        if len(chosen) >= wanted or not len(days):
+            break
         day = days[int(rng.integers(0, len(days)))]
-        day_start, day_end = day.strftime("%Y-%m-%d"), (day + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        total = int(client.events_page("fishing", day_start, day_end, limit=1).get("total") or 0)
+        day_start = day.strftime("%Y-%m-%d")
+        day_end = (day + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        total = int(client.events_page(event_type, day_start, day_end, limit=1).get("total") or 0)
         if total == 0:
             continue
         offset = int(rng.integers(0, max(total - 50, 1)))
-        page = client.events_page("fishing", day_start, day_end, offset=offset, limit=50)
-        for event in page.get("entries") or []:
-            vessel_id = (event.get("vessel") or {}).get("id")
-            if vessel_id and vessel_id not in seen and len(chosen) < wanted:
+        page = client.events_page(event_type, day_start, day_end, offset=offset, limit=50)
+        entries = page.get("entries") or []
+        for index in rng.permutation(len(entries)):
+            vessel = entries[int(index)].get("vessel") or {}
+            is_fishing = str(vessel.get("type") or "").lower() == "fishing"
+            if is_fishing != (vessel_class == "fishing"):
+                continue
+            vessel_id = vessel.get("id")
+            if vessel_id and vessel_id not in seen:
                 seen.add(vessel_id)
                 chosen.append(vessel_id)
+                # At most a few vessels per day, so one fleet cannot fill a group.
+                if len(chosen) >= wanted or len(chosen) % 5 == 0:
+                    break
     return chosen
 
 
 def _latest_fishing_event(client: GFWClient, vessel_id: str, start: str, end: str) -> dict | None:
     """The vessel's most recent apparent fishing event in the window, if any."""
     try:
-        first = client.events_page("fishing", start, end, vessels=[vessel_id], limit=1)
-        total = int(first.get("total") or 0)
-        if total <= 1:
-            return (first.get("entries") or [None])[0]
-        last = client.events_page("fishing", start, end, vessels=[vessel_id], offset=total - 1, limit=1)
-        return (last.get("entries") or [None])[0]
+        page = client.events_page(
+            "fishing", start, end, vessels=[vessel_id], limit=1, sort="-start"
+        )
+        return (page.get("entries") or [None])[0]
     except GFWError:
         return None
 

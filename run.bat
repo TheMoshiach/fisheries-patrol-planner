@@ -28,5 +28,5 @@ if not exist "data\real\scores\risk_scores.parquet" if not exist "data\sample\sc
 )
 
 echo Opening http://localhost:8501 ...
-start "" /b cmd /c "timeout /t 5 /nobreak >nul & start http://localhost:8501"
+start "" /b cmd /c "%SystemRoot%\System32\timeout.exe /t 5 /nobreak >nul & start http://localhost:8501"
 .venv\Scripts\python.exe -m streamlit run app\streamlit_app.py --server.headless true --server.port 8501 --browser.gatherUsageStats false

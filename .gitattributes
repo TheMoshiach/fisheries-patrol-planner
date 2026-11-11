@@ -1,0 +1,2 @@
+*.parquet binary
+*.bat text eol=crlf
