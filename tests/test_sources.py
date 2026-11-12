@@ -72,6 +72,19 @@ def test_server_errors_are_retried_then_reported(monkeypatch):
         failing.search_vessels('imo="9139610"')
 
 
+def test_a_passing_service_fault_is_retried(monkeypatch):
+    monkeypatch.setattr(gfw.time, "sleep", lambda seconds: None)
+    fault = FakeResponse(status=422, payload={"detail": "This dataset has an unsupported schema or was deprecated"})
+    api, session = client([fault, FakeResponse(status=201, payload={"entries": [], "total": 0})])
+    assert api.events_page("fishing", "2026-06-01", "2026-06-02")["total"] == 0
+    assert len(session.calls) == 2
+    # Any other 422 is a real mistake in the request and is reported at once.
+    bad, bad_session = client([FakeResponse(status=422, payload={"detail": "startDate is required"})])
+    with pytest.raises(gfw.GFWError, match="startDate"):
+        bad.events_page("fishing", "2026-06-01", "2026-06-02")
+    assert len(bad_session.calls) == 1
+
+
 def test_a_rejected_token_is_not_retried():
     api, session = client([FakeResponse(status=401)])
     with pytest.raises(gfw.GFWError, match="rejected the API token"):

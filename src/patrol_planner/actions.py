@@ -1,15 +1,19 @@
 """Officer decisions.
 
 Each function here is one *action*: it takes named parameters, checks them against
-the current tables, and appends exactly one row to the ``patrol_decisions`` log.
-Nothing is ever updated or deleted, so the log is a complete audit trail and the
-current state (which boat is on which vessel) is always derived from it.
+the current tables, and appends rows to the ``patrol_decisions`` log. Nothing is
+ever updated or deleted, so the log is a complete audit trail and the current
+state (which boat is on which vessels) is always derived from it.
+
+A patrol is one boat sent to one or more vessels in a planned order. It is stored
+as one row per vessel, sharing a ``patrol_id``.
 """
 
 from __future__ import annotations
 
 import csv
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -40,23 +44,33 @@ class DecisionLog:
         frame = pd.read_csv(self.path, dtype="string", keep_default_na=False, na_values=[""])
         return schemas.conform(frame, schema)
 
-    def append(self, row: dict) -> None:
+    def append(self, rows: Sequence[dict]) -> None:
         columns = list(schemas.PATROL_DECISIONS.columns)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A log written by an earlier version may lack newer columns: bring it up to date first.
+        if self.path.exists():
+            with open(self.path, newline="", encoding="utf-8") as handle:
+                header = next(csv.reader(handle), [])
+            if header != columns:
+                self.read().to_csv(self.path, index=False)
         is_new = not self.path.exists()
         with open(self.path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=columns)
             if is_new:
                 writer.writeheader()
-            writer.writerow({c: "" if row.get(c) is None else row[c] for c in columns})
+            for row in rows:
+                writer.writerow({c: "" if row.get(c) is None else row[c] for c in columns})
 
 
 # --- state derived from the log ---------------------------------------------------
 def open_assignments(decisions: pd.DataFrame) -> pd.DataFrame:
-    """Assignments that have not been released: at most one per boat, the latest."""
-    relevant = decisions[decisions["decision_type"].isin([ASSIGN_PATROL, RELEASE_BOAT])]
-    latest = relevant.sort_values("decided_at", kind="stable").groupby("patrol_boat_id").tail(1)
-    return latest[latest["decision_type"] == ASSIGN_PATROL].reset_index(drop=True)
+    """Vessels a boat is currently assigned to: assignments made since its last release."""
+    assigned = decisions[decisions["decision_type"] == ASSIGN_PATROL]
+    released = decisions[decisions["decision_type"] == RELEASE_BOAT]
+    last_release = released.groupby("patrol_boat_id")["decided_at"].max()
+    since = pd.to_datetime(assigned["patrol_boat_id"].map(last_release.to_dict()), utc=True)
+    still_open = assigned[since.isna() | (assigned["decided_at"] > since)]
+    return still_open.sort_values(["decided_at", "route_stop"], kind="stable").reset_index(drop=True)
 
 
 def latest_vessel_status(decisions: pd.DataFrame) -> pd.DataFrame:
@@ -71,6 +85,52 @@ def latest_vessel_status(decisions: pd.DataFrame) -> pd.DataFrame:
 
 
 # --- actions ------------------------------------------------------------------------
+def assign_route(
+    log: DecisionLog,
+    *,
+    officer: str,
+    patrol_boat_id: str,
+    vessel_ids: Sequence[str],
+    rationale: str,
+    ranked_vessels: pd.DataFrame,
+    patrol_boats: pd.DataFrame,
+    data_mode: str,
+    now: pd.Timestamp | None = None,
+) -> list[dict]:
+    """Send a patrol boat to one or more vessels, in the order given."""
+    officer = _require_officer(officer)
+    vessel_ids = list(dict.fromkeys(vessel_ids))
+    if not vessel_ids:
+        raise ActionError("Choose at least one vessel for the patrol.")
+    vessels = [_require_vessel(vessel_id, ranked_vessels) for vessel_id in vessel_ids]
+    boats = patrol_boats[patrol_boats["patrol_boat_id"] == patrol_boat_id]
+    if boats.empty:
+        raise ActionError(f"Unknown patrol boat: {patrol_boat_id}")
+    boat = boats.iloc[0]
+    if boat["status"] != "available":
+        raise ActionError(f"{boat['name']} is not available (status: {boat['status']}).")
+
+    active = open_assignments(log.read())
+    if (active["patrol_boat_id"] == patrol_boat_id).any():
+        raise ActionError(f"{boat['name']} is already on a patrol. Release it first.")
+    covered = active[active["vessel_id"].isin(vessel_ids)]
+    if not covered.empty:
+        first = covered.iloc[0]
+        raise ActionError(
+            f"Vessel {first['vessel_id']} already has {first['patrol_boat_id']} assigned to it."
+        )
+
+    decided_at = now if now is not None else pd.Timestamp.now(tz="UTC")
+    patrol_id = str(uuid.uuid4())
+    rows = [
+        _row(ASSIGN_PATROL, officer, rationale, data_mode, decided_at, vessel, patrol_boat_id,
+             patrol_id, stop)
+        for stop, vessel in enumerate(vessels, start=1)
+    ]
+    log.append(rows)
+    return rows
+
+
 def assign_patrol(
     log: DecisionLog,
     *,
@@ -83,29 +143,12 @@ def assign_patrol(
     data_mode: str,
     now: pd.Timestamp | None = None,
 ) -> dict:
-    """Send a patrol boat after a vessel."""
-    officer = _require_officer(officer)
-    vessel = _require_vessel(vessel_id, ranked_vessels)
-    boats = patrol_boats[patrol_boats["patrol_boat_id"] == patrol_boat_id]
-    if boats.empty:
-        raise ActionError(f"Unknown patrol boat: {patrol_boat_id}")
-    boat = boats.iloc[0]
-    if boat["status"] != "available":
-        raise ActionError(f"{boat['name']} is not available (status: {boat['status']}).")
-
-    active = open_assignments(log.read())
-    busy = active[active["patrol_boat_id"] == patrol_boat_id]
-    if not busy.empty:
-        raise ActionError(
-            f"{boat['name']} is already assigned to vessel {busy.iloc[0]['vessel_id']}. "
-            "Release it first."
-        )
-    covered = active[active["vessel_id"] == vessel_id]
-    if not covered.empty:
-        raise ActionError(
-            f"This vessel already has {covered.iloc[0]['patrol_boat_id']} assigned to it."
-        )
-    return _record(log, ASSIGN_PATROL, officer, rationale, data_mode, now, vessel, patrol_boat_id)
+    """Send a patrol boat after a single vessel."""
+    return assign_route(
+        log, officer=officer, patrol_boat_id=patrol_boat_id, vessel_ids=[vessel_id],
+        rationale=rationale, ranked_vessels=ranked_vessels, patrol_boats=patrol_boats,
+        data_mode=data_mode, now=now,
+    )[0]
 
 
 def release_boat(
@@ -116,21 +159,29 @@ def release_boat(
     rationale: str,
     data_mode: str,
     now: pd.Timestamp | None = None,
-) -> dict:
-    """End a boat's current assignment so it can be used again."""
+) -> list[dict]:
+    """End a boat's current patrol so it can be used again."""
     officer = _require_officer(officer)
     active = open_assignments(log.read())
     current = active[active["patrol_boat_id"] == patrol_boat_id]
     if current.empty:
-        raise ActionError(f"{patrol_boat_id} has no open assignment to release.")
-    previous = current.iloc[0]
-    vessel = {
-        "vessel_id": previous["vessel_id"],
-        "risk_score_id": previous["risk_score_id"],
-        "risk_score": previous["risk_score_at_decision"],
-        "rank": previous["rank_at_decision"],
-    }
-    return _record(log, RELEASE_BOAT, officer, rationale, data_mode, now, vessel, patrol_boat_id)
+        raise ActionError(f"{patrol_boat_id} has no open patrol to release.")
+    decided_at = now if now is not None else pd.Timestamp.now(tz="UTC")
+    rows = [
+        _row(
+            RELEASE_BOAT, officer, rationale, data_mode, decided_at,
+            {
+                "vessel_id": previous["vessel_id"],
+                "risk_score_id": previous["risk_score_id"],
+                "risk_score": previous["risk_score_at_decision"],
+                "rank": previous["rank_at_decision"],
+            },
+            patrol_boat_id, previous["patrol_id"], previous["route_stop"],
+        )
+        for _, previous in current.iterrows()
+    ]
+    log.append(rows)
+    return rows
 
 
 def add_to_watchlist(
@@ -146,7 +197,7 @@ def add_to_watchlist(
     """Keep an eye on a vessel without sending a boat."""
     officer = _require_officer(officer)
     vessel = _require_vessel(vessel_id, ranked_vessels)
-    return _record(log, WATCHLIST, officer, rationale, data_mode, now, vessel, None)
+    return _record(log, WATCHLIST, officer, rationale, data_mode, now, vessel)
 
 
 def dismiss_vessel(
@@ -164,7 +215,7 @@ def dismiss_vessel(
     if not (rationale or "").strip():
         raise ActionError("Give a reason for dismissing this vessel.")
     vessel = _require_vessel(vessel_id, ranked_vessels)
-    return _record(log, DISMISS, officer, rationale, data_mode, now, vessel, None)
+    return _record(log, DISMISS, officer, rationale, data_mode, now, vessel)
 
 
 # --- internals ----------------------------------------------------------------------
@@ -182,31 +233,29 @@ def _require_vessel(vessel_id: str, ranked_vessels: pd.DataFrame) -> dict:
     return match.iloc[0].to_dict()
 
 
-def _record(
-    log: DecisionLog,
-    decision_type: str,
-    officer: str,
-    rationale: str,
-    data_mode: str,
-    now: pd.Timestamp | None,
-    vessel: dict,
-    patrol_boat_id: str | None,
-) -> dict:
+def _record(log, decision_type, officer, rationale, data_mode, now, vessel) -> dict:
     decided_at = now if now is not None else pd.Timestamp.now(tz="UTC")
+    row = _row(decision_type, officer, rationale, data_mode, decided_at, vessel, None, None, None)
+    log.append([row])
+    return row
+
+
+def _row(decision_type, officer, rationale, data_mode, decided_at, vessel, patrol_boat_id,
+         patrol_id, route_stop) -> dict:
     score = vessel.get("risk_score")
     rank = vessel.get("rank")
-    row = {
+    return {
         "decision_id": str(uuid.uuid4()),
         "decided_at": decided_at.isoformat(),
         "officer": officer,
         "decision_type": decision_type,
         "vessel_id": vessel.get("vessel_id"),
         "patrol_boat_id": patrol_boat_id,
+        "patrol_id": patrol_id,
+        "route_stop": None if route_stop is None or pd.isna(route_stop) else int(route_stop),
         "risk_score_id": vessel.get("risk_score_id"),
         "risk_score_at_decision": None if pd.isna(score) else float(score),
         "rank_at_decision": None if pd.isna(rank) else int(rank),
         "rationale": (rationale or "").strip(),
         "data_mode": data_mode,
     }
-    log.append(row)
-    return row

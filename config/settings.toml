@@ -3,8 +3,11 @@
 
 [window]
 # Behaviour is analysed over the months leading up to (and excluding) this date.
-end = "2026-10-01"
+# "auto" means the most recent day the source is likely to have complete data for
+# (today minus lag_days), fixed at the moment data is refreshed.
+end = "auto"
 months = 12
+lag_days = 5
 
 [patrol_area]
 name = "Galapagos and surrounding high seas"
@@ -18,6 +21,8 @@ min_fishing_hours = 24.0
 watched_protected_areas = ["Galapagos - Reserva Marina", "Hermandad - Reserva Marina"]
 # "Near" a watched protected area means within this many nautical miles of it.
 buffer_nm = 12.0
+# The map shows where each patrol-area vessel fished over this many days.
+trail_days = 90
 
 [scoring]
 model_version = "rules-v1"

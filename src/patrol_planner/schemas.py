@@ -337,6 +337,8 @@ PATROL_DECISIONS = TableSchema(
         "decision_type": STRING,  # ASSIGN_PATROL | RELEASE_BOAT | WATCHLIST | DISMISS
         "vessel_id": STRING,
         "patrol_boat_id": STRING,
+        "patrol_id": STRING,  # shared by every vessel on one patrol
+        "route_stop": INT,  # order in which the patrol visits the vessel
         "risk_score_id": STRING,
         "risk_score_at_decision": FLOAT,
         "rank_at_decision": INT,

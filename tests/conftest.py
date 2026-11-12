@@ -11,7 +11,7 @@ from patrol_planner.storage import DataStore
 
 @pytest.fixture(scope="session")
 def settings():
-    return load_settings()
+    return load_settings(window_end="2026-10-01", use_overrides=False)
 
 
 @pytest.fixture(scope="session")

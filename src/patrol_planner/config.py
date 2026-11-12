@@ -13,6 +13,8 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.toml"
+# Changes made on the app's settings page are stored here and laid over the defaults.
+DEFAULT_OVERRIDES_PATH = PROJECT_ROOT / "config" / "overrides.json"
 
 SIGNALS = (
     "going_dark",
@@ -44,6 +46,7 @@ class PatrolArea:
     min_fishing_hours: float
     watched_protected_areas: tuple[str, ...]
     buffer_nm: float
+    trail_days: int = 90
 
     def contains(self, lat: float, lon: float) -> bool:
         west, south, east, north = self.bbox
@@ -107,15 +110,70 @@ class SettingsError(ValueError):
     pass
 
 
-def load_settings(path: Path | str | None = None) -> Settings:
+def overrides_path() -> Path:
+    return Path(os.environ.get("PATROL_PLANNER_OVERRIDES") or DEFAULT_OVERRIDES_PATH)
+
+
+def read_overrides() -> dict:
+    path = overrides_path()
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_overrides(overrides: dict) -> None:
+    """Save settings changed in the app. They are validated before being written."""
+    parse_settings(_merge(_read_defaults(None), overrides), window_end="2020-01-01")
+    path = overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
+
+
+def _read_defaults(path: Path | str | None) -> dict:
     path = Path(path or os.environ.get("PATROL_PLANNER_SETTINGS") or DEFAULT_SETTINGS_PATH)
     with open(path, "rb") as handle:
-        raw = tomllib.load(handle)
-    return parse_settings(raw)
+        return tomllib.load(handle)
 
 
-def parse_settings(raw: dict) -> Settings:
-    end = pd.Timestamp(raw["window"]["end"], tz="UTC")
+def _merge(base: dict, extra: dict) -> dict:
+    """Lay ``extra`` over ``base``: nested tables are merged, everything else is replaced."""
+    out = dict(base)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+merge_settings = _merge
+
+
+def load_settings(
+    path: Path | str | None = None,
+    window_end: str | pd.Timestamp | None = None,
+    use_overrides: bool = True,
+) -> Settings:
+    """Read the settings file, lay any saved overrides on top, and fix the analysis window.
+
+    ``window_end`` pins the window to a dataset that has already been built. Without
+    it, a window end of "auto" means the most recent day the source is likely to
+    have complete data for.
+    """
+    raw = _read_defaults(path)
+    if use_overrides:
+        raw = _merge(raw, read_overrides())
+    return parse_settings(raw, window_end)
+
+
+def parse_settings(raw: dict, window_end: str | pd.Timestamp | None = None) -> Settings:
+    configured = window_end if window_end is not None else raw["window"]["end"]
+    if str(configured).lower() == "auto":
+        lag = int(raw["window"].get("lag_days", 5))
+        end = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=lag)
+    else:
+        end = pd.Timestamp(configured)
+        end = end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC")
     start = end - pd.DateOffset(months=int(raw["window"]["months"]))
 
     area = raw["patrol_area"]
@@ -128,7 +186,7 @@ def parse_settings(raw: dict) -> Settings:
     half_points = {k: float(v) for k, v in scoring["half_points"].items()}
     if set(weights) != set(SIGNALS) or set(half_points) != set(SIGNALS):
         raise SettingsError(f"scoring weights and half_points must cover exactly {SIGNALS}")
-    if abs(sum(weights.values()) - 1.0) > 1e-9:
+    if abs(sum(weights.values()) - 1.0) > 1e-6:
         raise SettingsError("scoring.weights must add up to 1")
     if any(v <= 0 for v in half_points.values()):
         raise SettingsError("scoring.half_points must be positive")
@@ -142,6 +200,7 @@ def parse_settings(raw: dict) -> Settings:
             min_fishing_hours=float(area["min_fishing_hours"]),
             watched_protected_areas=tuple(area["watched_protected_areas"]),
             buffer_nm=float(area["buffer_nm"]),
+            trail_days=int(area.get("trail_days", 90)),
         ),
         scoring=ScoringSettings(
             model_version=str(scoring["model_version"]),

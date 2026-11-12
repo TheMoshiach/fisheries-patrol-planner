@@ -53,6 +53,7 @@ RAW_DATASETS = (
     "insights",
     "cohort",
     "iuu_seed_imos",
+    "protected_area_shapes",
 )
 
 
@@ -144,3 +145,10 @@ def data_mode() -> str:
 
 def open_store(mode: str | None = None) -> DataStore:
     return DataStore(data_root() / (mode or data_mode()))
+
+
+def settings_for(store: DataStore):
+    """Settings with the analysis window pinned to the one the store's data was built for."""
+    from .config import load_settings
+
+    return load_settings(window_end=store.read_manifest().get("window_end"))

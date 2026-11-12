@@ -135,8 +135,8 @@ class GFWClient:
                     if finished is not None:
                         return finished
                     last_error = "the report timed out and could not be collected"
-                elif status >= 500:
-                    last_error = f"HTTP {status}"
+                elif status >= 500 or _is_passing_fault(status, response.text):
+                    last_error = f"HTTP {status}: {response.text[:200]}"
                 else:
                     raise GFWError(f"HTTP {status} from {path}: {response.text[:400]}")
             if attempt < self._max_attempts:
@@ -171,6 +171,10 @@ class GFWClient:
     def protected_area_list(self) -> list[dict]:
         """Every marine protected area known to the API: [{"id": ..., "label": ...}]."""
         return self.request("GET", f"/datasets/{PROTECTED_AREA_DATASET}/context-layers")
+
+    def protected_area_shape(self, area_id: str) -> dict:
+        """The boundary of one protected area as a GeoJSON feature."""
+        return self.request("GET", f"/datasets/{PROTECTED_AREA_DATASET}/context-layers/{area_id}")
 
     # --- activity reports ---------------------------------------------------------
     def fishing_hours_by_vessel(
@@ -291,6 +295,11 @@ class GFWClient:
             "vessels": [{"datasetId": IDENTITY_DATASET, "vesselId": vessel_id}],
         }
         return self.request("POST", "/insights/vessels", body=body)
+
+
+def _is_passing_fault(status: int, text: str) -> bool:
+    """The service now and then rejects a valid request with this message; a retry succeeds."""
+    return status == 422 and "unsupported schema or was deprecated" in text
 
 
 def _maybe_int(value):

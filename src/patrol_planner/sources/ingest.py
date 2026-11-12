@@ -16,6 +16,7 @@ Which vessels are fetched
 from __future__ import annotations
 
 import os
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -24,6 +25,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from ..config import PROJECT_ROOT, Settings
+from ..geo import simplify_geometry
 from ..storage import DataStore
 from ..transforms.clean import match_watched_protected_areas
 from . import iuu_lists
@@ -80,6 +82,15 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
                 for row in rows
             )
     store.write_raw("protected_area_reports", area_reports)
+    shapes = []
+    for area_id in watched_ids:
+        try:
+            geometry = simplify_geometry(client.protected_area_shape(area_id).get("geometry"))
+        except GFWError:
+            geometry = None
+        if geometry:
+            shapes.append({"id": area_id, "name": watched[area_id], "geometry": geometry})
+    store.write_raw("protected_area_shapes", shapes)
 
     log("4/8 Vessels named on official IUU vessel lists")
     seeds = iuu_lists.fetch_seed_imos(log=log)
@@ -96,16 +107,21 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
         f"{settings.evaluation.history_start:%Y-%m-%d}")
 
     log("5/8 Comparison vessels from the same months")
-    rng = np.random.default_rng(settings.evaluation.random_seed)
     cohort: list[dict] = []
     taken = {case["vessel_id"] for case in cases}
     for case in cases:
         cohort.append({**case, "selection_reason": "iuu_listed_vessel"})
+        # Each group draws from its own random stream, so a change to one group
+        # (or a refresh on another day) leaves every other group's draw untouched.
+        rng = np.random.default_rng(
+            [settings.evaluation.random_seed, zlib.crc32(case["vessel_id"].encode())]
+        )
         controls = _random_vessels(
             client, case["vessel_class"], case["window_start"], case["window_end"],
             wanted=settings.evaluation.controls_per_case, exclude=taken, rng=rng,
         )
         taken.update(controls)
+        log(f"  group {cases.index(case) + 1} of {len(cases)}: {len(controls)} comparison vessels")
         cohort.extend(
             {**case, "vessel_id": v, "imo": None, "selection_reason": "matched_control"}
             for v in controls
@@ -140,7 +156,10 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
         log(f"  {len(events) - before} {event_type} events")
 
     log("8/8 Vessel indicators, flagged fishing events and last known positions")
-    insights = _parallel(lambda job: _try_insights(client, *job), jobs)
+    insights: list[dict] = []
+    for chunk in _batches(jobs, 100):
+        insights.extend(_parallel(lambda job: _try_insights(client, *job), chunk))
+        log(f"  indicators for {len(insights)} of {len(jobs)} vessels")
     failed = sum(1 for record in insights if "_error" in record)
     if failed:
         log(f"  indicators unavailable for {failed} vessels")
@@ -152,10 +171,18 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
         ids = list(fishing.get("eventsInNoTakeMpas") or [])
         ids += list(fishing.get("eventsInRfmoWithoutKnownAuthorization") or [])
         flagged.extend(ids[:MAX_FLAGGED_EVENTS_PER_VESSEL])
+    log(f"  {len(set(flagged))} flagged fishing events")
     events.extend(e for e in _parallel(lambda i: _try_event(client, i), sorted(set(flagged))) if e)
+    log("  last known positions")
     events.extend(
         e for e in _parallel(lambda v: _latest_fishing_event(client, v, start, end), patrol_ids) if e
     )
+    # Where each patrol-area vessel fished recently: drawn on the map as its trail.
+    trail_start = (window.end - pd.Timedelta(days=area.trail_days)).strftime("%Y-%m-%d")
+    before = len(events)
+    for batch in _batches(patrol_ids, BATCH):
+        events.extend(client.iter_events("fishing", trail_start, end, batch))
+    log(f"  {len(events) - before} recent fishing events for vessel trails")
     store.write_raw("events", events)
 
     manifest = {
@@ -174,7 +201,7 @@ def fetch_real(store: DataStore, settings: Settings, refresh: bool = False, log=
         "api_requests_this_run": client.requests_made,
     }
     store.write_manifest(manifest)
-    log(f"Done. {client.requests_made} API requests this run.")
+    log(f"Download finished. {client.requests_made} API requests this run.")
     return manifest
 
 
@@ -258,11 +285,14 @@ def _random_vessels(
         day = days[int(rng.integers(0, len(days)))]
         day_start = day.strftime("%Y-%m-%d")
         day_end = (day + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        total = int(client.events_page(event_type, day_start, day_end, limit=1).get("total") or 0)
-        if total == 0:
-            continue
-        offset = int(rng.integers(0, max(total - 50, 1)))
-        page = client.events_page(event_type, day_start, day_end, offset=offset, limit=50)
+        try:
+            total = int(client.events_page(event_type, day_start, day_end, limit=1).get("total") or 0)
+            if total == 0:
+                continue
+            offset = int(rng.integers(0, max(total - 50, 1)))
+            page = client.events_page(event_type, day_start, day_end, offset=offset, limit=50)
+        except GFWError:
+            continue  # one unavailable day is not worth stopping for; draw another
         entries = page.get("entries") or []
         for index in rng.permutation(len(entries)):
             vessel = entries[int(index)].get("vessel") or {}
@@ -305,7 +335,7 @@ def _try_event(client: GFWClient, event_id: str) -> dict | None:
 
 
 # --- small utilities ----------------------------------------------------------------
-def _batches(items: list[str], size: int):
+def _batches(items: list, size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
 

@@ -30,3 +30,7 @@ data/sample/
 
 # Local tool settings
 .claude/
+
+# Refresh job bookkeeping
+data/refresh_status.json
+data/refresh.log

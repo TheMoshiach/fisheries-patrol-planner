@@ -1,6 +1,6 @@
 @echo off
 rem Starts the Fisheries Patrol Planner. First run creates the Python environment,
-rem installs dependencies and builds a dataset; later runs start straight away.
+rem installs dependencies; later runs start straight away.
 setlocal
 cd /d "%~dp0"
 
@@ -13,17 +13,11 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-.venv\Scripts\python.exe -c "import patrol_planner, streamlit, pytest" 2>nul
+.venv\Scripts\python.exe -c "import patrol_planner, streamlit, streamlit_folium, pytest" 2>nul
 if errorlevel 1 (
     echo Installing dependencies...
     .venv\Scripts\python.exe -m pip install --quiet --upgrade pip
     .venv\Scripts\python.exe -m pip install --quiet -e ".[app,dev]"
-    if errorlevel 1 exit /b 1
-)
-
-if not exist "data\real\scores\risk_scores.parquet" if not exist "data\sample\scores\risk_scores.parquet" (
-    echo No dataset found. Building the synthetic sample...
-    .venv\Scripts\python.exe -m patrol_planner sample
     if errorlevel 1 exit /b 1
 )
 

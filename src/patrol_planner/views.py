@@ -38,7 +38,7 @@ def patrol_area_ranking(store: DataStore) -> pd.DataFrame:
     table["name"] = table["name"].fillna("(name not reported)")
 
     decisions = decision_log(store).read()
-    status = actions.latest_vessel_status(decisions)[["vessel_id", "decision_type", "patrol_boat_id"]]
+    status =actions.latest_vessel_status(decisions)[["vessel_id", "decision_type", "patrol_boat_id"]]
     status = status.rename(columns={"decision_type": "status", "patrol_boat_id": "assigned_boat"})
     table = table.merge(status, on="vessel_id", how="left")
     table["status"] = table["status"].map(STATUS_LABELS).fillna("Not reviewed")
@@ -60,11 +60,46 @@ def vessel_reasons(store: DataStore, risk_score_id: str) -> pd.DataFrame:
     return mine.sort_values("points", ascending=False).reset_index(drop=True)
 
 
-def vessel_events(store: DataStore, vessel_id: str, settings: Settings) -> pd.DataFrame:
-    """The individual events behind a vessel's score, newest first, described in words."""
+def vessel_trail(store: DataStore, vessel_id: str, settings: Settings) -> pd.DataFrame:
+    """Where a vessel apparently fished over the trail period, oldest first.
+
+    This is a sequence of fishing locations, not the vessel's actual track: the
+    source does not release tracks to public users.
+    """
+    events = store.read("events")
+    since = settings.window.end - pd.Timedelta(days=settings.patrol_area.trail_days)
+    mine = events[
+        (events["vessel_id"] == vessel_id)
+        & (events["event_type"] == "fishing")
+        & (events["start_time"] >= since)
+        & (events["start_time"] < settings.window.end)
+    ].dropna(subset=["lat", "lon"])
+    return mine.sort_values("start_time")[["start_time", "lat", "lon", "duration_hours"]].reset_index(drop=True)
+
+
+def protected_area_shapes(store: DataStore) -> list[dict]:
+    """Outlines of the watched protected areas, when they have been downloaded."""
+    return store.read_raw("protected_area_shapes")
+
+
+def vessel_events(
+    store: DataStore, vessel_id: str, settings: Settings, include_routine_fishing: bool = False
+) -> pd.DataFrame:
+    """The individual events behind a vessel's score, newest first, described in words.
+
+    Ordinary apparent fishing events are left out unless asked for: there are
+    hundreds per vessel and they do not affect the score.
+    """
     events = store.read("events")
     in_window = (events["start_time"] >= settings.window.start) & (events["start_time"] < settings.window.end)
     mine = events[(events["vessel_id"] == vessel_id) & in_window].copy()
+    if not include_routine_fishing:
+        routine = (
+            (mine["event_type"] == "fishing")
+            & ~mine["in_no_take_area"].fillna(False)
+            & ~mine["potential_risk"].fillna(False)
+        )
+        mine = mine[~routine]
     if mine.empty:
         return mine.assign(description=pd.Series(dtype="string"), counted=pd.Series(dtype="boolean"))
     counted_gaps = set(qualifying_gaps(mine, settings.scoring)["event_id"])

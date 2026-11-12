@@ -14,7 +14,7 @@ import sys
 
 from . import pipeline, reporting
 from .config import load_settings
-from .storage import data_mode, open_store
+from .storage import data_mode, open_store, settings_for
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,16 +43,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "fetch":
+        from . import jobs
         from .sources import ingest
 
         store = open_store("real")
-        ingest.fetch_real(store, settings, refresh=args.refresh)
-        _print_summary(pipeline.build(store, settings))
+        jobs.write_status("running", "Downloading from Global Fishing Watch")
+        try:
+            ingest.fetch_real(store, settings, refresh=args.refresh)
+            print("Building rankings")
+            _print_summary(pipeline.build(store, settings))
+        except Exception as error:
+            jobs.write_status("failed", str(error))
+            print(f"Refresh failed: {error}")
+            return 1
+        jobs.write_status("done", f"Data now covers up to {settings.window.end_date}")
+        print("Done.")
         return 0
 
     if args.command == "build":
         store = open_store(args.data)
-        _print_summary(pipeline.build(store, settings))
+        _print_summary(pipeline.build(store, settings_for(store)))
         return 0
 
     if args.command == "report":

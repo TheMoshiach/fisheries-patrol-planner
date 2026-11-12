@@ -74,7 +74,7 @@ def test_invalid_assignments_are_rejected_and_nothing_is_saved(log, ranked, boat
 
 def test_a_boat_or_vessel_cannot_be_double_booked(log, ranked, boats):
     assign(log, ranked, boats, vessel="top", boat="PB-01")
-    with pytest.raises(actions.ActionError, match="already assigned"):
+    with pytest.raises(actions.ActionError, match="already on a patrol"):
         assign(log, ranked, boats, vessel="mid", boat="PB-01")
     with pytest.raises(actions.ActionError, match="already has"):
         assign(log, ranked, boats, vessel="top", boat="PB-02")
@@ -91,7 +91,7 @@ def test_release_frees_the_boat_and_history_is_kept(log, ranked, boats):
     decisions = log.read()
     assert decisions["decision_type"].tolist() == ["ASSIGN_PATROL", "RELEASE_BOAT", "ASSIGN_PATROL"]
     assert actions.open_assignments(decisions)["vessel_id"].tolist() == ["mid"]
-    with pytest.raises(actions.ActionError, match="no open assignment"):
+    with pytest.raises(actions.ActionError, match="no open patrol"):
         actions.release_boat(log, officer="x", patrol_boat_id="PB-02", rationale="", data_mode="sample")
 
 
