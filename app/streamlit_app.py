@@ -364,10 +364,10 @@ with tab_map:
                 f"{str(selected['gear_type']).replace('_', ' ')} · MMSI {selected['mmsi']} · "
                 f"IMO {selected['imo'] if pd.notna(selected['imo']) else 'not reported'}"
             )
-            m1, m2, m3 = st.columns(3)
+            m1, m2 = st.columns(2)
             m1.metric("Risk score", f"{selected['risk_score']:.0f} / 100")
             m2.metric("Risk", selected["risk_tier"])
-            m3.metric("Status", selected["status"])
+            st.markdown(f"**Status:** {selected['status']}")
             coverage = selected["ais_coverage_pct"]
             tracker = "an unknown share" if pd.isna(coverage) else f"{coverage:.0f}%"
             st.caption(
