@@ -34,3 +34,6 @@ data/sample/
 # Refresh job bookkeeping
 data/refresh_status.json
 data/refresh.log
+
+# Scratch output of the browser checks
+demo/check/

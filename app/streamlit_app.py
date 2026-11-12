@@ -37,12 +37,12 @@ store = open_store("real")
 # --- data refresh -----------------------------------------------------------------
 def start_refresh() -> None:
     if not load_token():
-        st.session_state["flash"] = (
-            "error",
+        st.session_state["refresh_error"] = (
             "No Global Fishing Watch token found. Open the file named .env in the project "
-            "folder with Notepad and paste your token after GFW_API_TOKEN=",
+            "folder with Notepad and paste your token after GFW_API_TOKEN= then try again."
         )
         return
+    st.session_state.pop("refresh_error", None)
     jobs.start_refresh()
 
 
@@ -68,14 +68,16 @@ def refresh_status(location: str) -> None:
         disabled=state == "running",
         help="Downloads the newest available data and rebuilds the ranking. Takes 10 to 20 minutes.",
     )
+    # Shown here, next to the button, because only this part of the page redraws on a
+    # click. It stays until a refresh starts, so the panel's own updates do not wipe it.
+    problem = st.session_state.get("refresh_error")
+    if problem:
+        st.error(problem)
 
 
 if not store.exists("risk_scores"):
     st.title("Fisheries Patrol Planner")
     st.info("There is no data yet. Click the button below to download it.")
-    flash = st.session_state.pop("flash", None)
-    if flash:
-        st.error(flash[1])
     refresh_status("first_run")
     st.stop()
 
@@ -127,9 +129,12 @@ st.caption(
     f"{manifest.get('window_end')} · data downloaded {manifest.get('accessed', 'n/a')} · "
     "[Powered by Global Fishing Watch](https://globalfishingwatch.org)"
 )
+# The message area is always present, even when empty. If it came and went, the
+# tabs below would be rebuilt and the page would jump back to the first tab.
+message_area = st.empty()
 flash = st.session_state.pop("flash", None)
 if flash:
-    (st.error if flash[0] == "error" else st.success)(flash[1])
+    (message_area.error if flash[0] == "error" else message_area.success)(flash[1])
 
 # --- sidebar ------------------------------------------------------------------------
 with st.sidebar:
@@ -515,7 +520,10 @@ with tab_log:
             hide_index=True, width="stretch",
         )
         st.download_button("Download as CSV", decisions.to_csv(index=False), "patrol_decisions.csv", "text/csv")
-    st.caption(f"Saved to {log.path}. Rows are only ever added, never changed.")
+    st.caption(
+        f"Saved on this computer in the {log.path.parent.name} folder of the project's data. "
+        "Rows are only ever added, never changed."
+    )
 
 # =====================================================================================
 # Reliability
@@ -646,22 +654,35 @@ with tab_settings:
 
     st.divider()
     st.subheader("Patrol area")
-    st.caption("Drag a rectangle on the map (use the square tool on the left), or type the edges below.")
-    west, south, east, north = settings.patrol_area.bbox
-    area_map = folium.Map(location=[(south + north) / 2, (west + east) / 2], zoom_start=5, tiles="OpenStreetMap")
-    folium.Rectangle([[south, west], [north, east]], color="#555555", weight=1.5, fill=False,
-                     tooltip="Current patrol area").add_to(area_map)
-    area_map.fit_bounds([[south - 4, west - 4], [north + 4, east + 4]])
-    Draw(draw_options={"polyline": False, "polygon": False, "circle": False, "marker": False,
-                       "circlemarker": False, "rectangle": True},
-         edit_options={"edit": False, "remove": False}).add_to(area_map)
-    drawn = st_folium(area_map, returned_objects=["last_active_drawing"], height=380, width="stretch", key="area_map")
-    drawing = (drawn or {}).get("last_active_drawing")
-    if drawing:
-        ring = drawing["geometry"]["coordinates"][0]
-        west, east = min(p[0] for p in ring), max(p[0] for p in ring)
-        south, north = min(p[1] for p in ring), max(p[1] for p in ring)
-        st.info("Rectangle drawn. Check the edges below, then save.")
+    st.caption(
+        f"Currently {abs(west):.1f}°{'W' if west < 0 else 'E'} to {abs(east):.1f}°{'W' if east < 0 else 'E'}, "
+        f"{abs(south):.1f}°{'S' if south < 0 else 'N'} to {abs(north):.1f}°{'S' if north < 0 else 'N'}. "
+        "Type new edges below, or draw the area on a map."
+    )
+    # The map is only created once asked for: a map built inside a tab that is not
+    # on screen cannot work out its size and opens zoomed out to the whole world.
+    if st.toggle("Draw the area on a map", key="draw_area"):
+        st.caption("Click the square tool at the top left of the map, then drag a rectangle.")
+        area_map = folium.Map(tiles=None, max_bounds=True, min_zoom=2)
+        folium.TileLayer("OpenStreetMap", no_wrap=True).add_to(area_map)
+        folium.Rectangle([[south, west], [north, east]], color="#555555", weight=1.5, fill=False,
+                         tooltip="Current patrol area").add_to(area_map)
+        area_map.fit_bounds([[south - 4, west - 4], [north + 4, east + 4]])
+        Draw(draw_options={"polyline": False, "polygon": False, "circle": False, "marker": False,
+                           "circlemarker": False, "rectangle": True},
+             edit_options={"edit": False, "remove": False}).add_to(area_map)
+        drawn = st_folium(area_map, returned_objects=["last_active_drawing"], height=420, width="stretch",
+                          key="area_map")
+        drawing = (drawn or {}).get("last_active_drawing")
+        if drawing:
+            ring = drawing["geometry"]["coordinates"][0]
+            lons, lats = [p[0] for p in ring], [p[1] for p in ring]
+            if min(lons) < -180 or max(lons) > 180:
+                st.warning("That rectangle crosses the edge of the map. Draw it within one copy of the world.")
+            else:
+                west, east = min(lons), max(lons)
+                south, north = max(min(lats), -90.0), min(max(lats), 90.0)
+                st.info("Rectangle drawn. Check the edges below, then save.")
     area_name = st.text_input("Name", settings.patrol_area.name)
     e1, e2, e3, e4 = st.columns(4)
     new_box = [
@@ -678,7 +699,12 @@ with tab_settings:
     if query:
         needle = query.lower()
         found = [a["label"] for a in store.iter_raw("protected_area_list") if needle in str(a.get("label", "")).lower()]
-        st.write(found[:25] if found else "No protected area with that in its name.")
+        if found:
+            st.markdown("\n".join(f"- {name}" for name in found[:25]))
+            if len(found) > 25:
+                st.caption(f"Showing 25 of {len(found)}. Type more of the name to narrow it down.")
+        else:
+            st.caption("No protected area with that in its name.")
     if st.button("Save patrol area"):
         watched = [line.strip() for line in area_text.splitlines() if line.strip()]
         save({"patrol_area": {"name": area_name, "bbox": new_box, "watched_protected_areas": watched}}, False,

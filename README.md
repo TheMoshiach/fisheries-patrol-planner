@@ -6,6 +6,9 @@ data, shows why each vessel ranks where it does, suggests which boat to send, an
 saves every decision the officer makes. It also measures how well its ranking
 agrees with a real public outcome: official lists of vessels caught fishing illegally.
 
+An 80-second walkthrough with captions is in
+[demo/fisheries-patrol-planner-demo.mp4](demo/fisheries-patrol-planner-demo.mp4).
+
 ## Run it
 
 Double-click the **Fisheries Patrol Planner** shortcut on the Desktop, or `run.bat`
@@ -17,8 +20,10 @@ in this folder. From a terminal the same thing is:
 
 The first run creates the Python environment (Python 3.11 or newer is required) and
 installs dependencies; after that it starts straight away and opens
-http://localhost:8501. Keep the small console window open while you use the app;
-closing it stops the app. If the Desktop shortcut is missing, right-click
+http://localhost:8501 in Google Chrome (or your default browser if Chrome is not
+installed). Keep the small console window open while you use the app; closing it stops
+the app. If the app is already running, the shortcut simply opens it in the browser
+again. You can also type that address into any browser on this computer while it runs. If the Desktop shortcut is missing, right-click
 `tools\create_shortcut.ps1` and choose "Run with PowerShell".
 
 The repository includes a snapshot of real data, so the app shows real vessels as
@@ -29,6 +34,11 @@ soon as it starts. Run the tests with:
 ```
 
 Everything else is done inside the app. Nothing below needs a terminal.
+
+Developers can also run `tools\browser_check.py`, which drives the app in Chrome through
+every feature against a throwaway copy of the data, and `tools\make_demo.py`, which
+re-records the demo video. Both need `pip install -e ".[demo]"` and
+`python -m playwright install ffmpeg`.
 
 ## Using the app
 
@@ -58,8 +68,9 @@ Rows are only ever added. Download as CSV.
   everything (10 to 20 minutes, in the background; the page reloads when done). The
   first refresh needs an API token: copy `.env.example` to `.env`, and paste a token
   from https://globalfishingwatch.org/our-apis/tokens after `GFW_API_TOKEN=`.
-- **Patrol boats**, **how much each behaviour counts**, and the **patrol area** (drag
-  a rectangle on a map) with its watched reserves. Boat and weight changes take
+- **Patrol boats**, **how much each behaviour counts**, and the **patrol area** (type
+  its edges, or switch on "Draw the area on a map" and drag a rectangle) with its
+  watched reserves. Boat and weight changes take
   effect at once; a new area takes effect at the next refresh.
 
 For developers, the same operations exist as commands (`python -m patrol_planner`
@@ -261,6 +272,10 @@ app/streamlit_app.py      the officer app (display only)
 config/settings.toml      default patrol area, weights, thresholds, example patrol fleet
 config/overrides.json     settings changed in the app (created on first save)
 tools/create_shortcut.ps1 makes the Desktop shortcut
+tools/open_app.py         opens the running app in Chrome
+tools/browser_check.py    clicks through every feature in Chrome (18 checks)
+tools/make_demo.py        records the demo video
+demo/                     the demo video
 data/real/                snapshot of real cleaned tables, features, scores and evaluation
 tests/                    95 tests
 DECISIONS.md              every choice made while building, with its reason

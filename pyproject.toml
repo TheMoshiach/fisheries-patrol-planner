@@ -20,6 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 app = ["streamlit>=1.50", "folium>=0.17", "streamlit-folium>=0.22"]
 dev = ["pytest>=8.0"]
+# Browser checks and the demo video (tools/browser_check.py, tools/make_demo.py).
+demo = ["playwright>=1.45", "imageio-ffmpeg>=0.5"]
 
 [project.scripts]
 patrol-planner = "patrol_planner.cli:main"
