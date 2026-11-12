@@ -8,13 +8,18 @@ agrees with a real public outcome: official lists of vessels caught fishing ille
 
 ## Run it
 
-Windows, one command. The first run creates the Python environment (Python 3.11 or
-newer is required) and installs dependencies; after that it starts straight away and
-opens http://localhost:8501.
+Double-click the **Fisheries Patrol Planner** shortcut on the Desktop, or `run.bat`
+in this folder. From a terminal the same thing is:
 
 ```
 .\run.bat
 ```
+
+The first run creates the Python environment (Python 3.11 or newer is required) and
+installs dependencies; after that it starts straight away and opens
+http://localhost:8501. Keep the small console window open while you use the app;
+closing it stops the app. If the Desktop shortcut is missing, right-click
+`tools\create_shortcut.ps1` and choose "Run with PowerShell".
 
 The repository includes a snapshot of real data, so the app shows real vessels as
 soon as it starts. Run the tests with:
@@ -23,24 +28,42 @@ soon as it starts. Run the tests with:
 .\test.bat
 ```
 
-To refresh the real data, copy `.env.example` to `.env`, paste a Global Fishing Watch
-API token (https://globalfishingwatch.org/our-apis/tokens), then run:
+Everything else is done inside the app. Nothing below needs a terminal.
 
-```
-.venv\Scripts\python.exe -m patrol_planner fetch
-```
+## Using the app
 
-Other commands (`python -m patrol_planner <command>`):
+**Map (main screen).** Each dot is a fishing vessel active in the patrol area: red is
+high risk, amber elevated, green low. The outlined shapes are the watched reserves,
+the dashed box is the patrol area and the blue markers are patrol boats.
 
-| Command | What it does |
-|---|---|
-| `fetch` | Download real data and rebuild everything (about 1,400 API requests, 10 minutes) |
-| `build` | Re-run the pipeline on data already downloaded, for example after changing weights |
-| `report` | Print the accuracy results |
-| `sample` | Generate clearly labelled synthetic data and build it (no token needed) |
-| `status` | Show which dataset is active |
+- **Find a vessel** three ways: type its name in the search box (it lists every
+  vessel with rank, flag and score), tick it in the ranked list, or click its dot.
+- **Selected vessel.** Its score, the reasons in plain words with the points each
+  added, and the events behind them. On the map its recent fishing locations appear
+  as a dashed trail, with markers where it switched its tracker off, met another
+  ship, or had fishing flagged.
+- **Plan a patrol.** Pick a boat, add vessels (or click "Suggest a route"), and the
+  route is drawn with the distance, bearing and time of each leg, and a warning if
+  it is beyond the boat's range. "Save patrol" records it. "Release" frees the boat.
+- **Watchlist or dismiss** a vessel with a reason; dismissed vessels drop off the map.
 
-Set `PATROL_PLANNER_DATA=sample` to make the app use the synthetic sample instead.
+**Decision log.** Every decision with who, when, and the score and rank at the time.
+Rows are only ever added. Download as CSV.
+
+**How reliable is this?** A plain-language summary of how the ranking was tested.
+
+**Settings.**
+
+- **Refresh data** downloads the newest data from Global Fishing Watch and rebuilds
+  everything (10 to 20 minutes, in the background; the page reloads when done). The
+  first refresh needs an API token: copy `.env.example` to `.env`, and paste a token
+  from https://globalfishingwatch.org/our-apis/tokens after `GFW_API_TOKEN=`.
+- **Patrol boats**, **how much each behaviour counts**, and the **patrol area** (drag
+  a rectangle on a map) with its watched reserves. Boat and weight changes take
+  effect at once; a new area takes effect at the next refresh.
+
+For developers, the same operations exist as commands (`python -m patrol_planner`
+followed by `fetch`, `build`, `report`, `sample` or `status`).
 
 ## The problem
 
@@ -83,12 +106,12 @@ The weights were set from domain reasoning before looking at any outcome, and ha
 been tuned since. That is deliberate: with so few known outcomes (see below), fitting
 weights to them would produce a flattering number and a worse tool.
 
-**Decisions.** The officer can assign a patrol boat, release it, put a vessel on a
-watchlist, or dismiss it with a reason. Each decision is one appended row recording who
-decided, when, about which vessel and boat, and the score and rank the officer saw at
-the time. Rows are never changed or deleted. A boat cannot be assigned twice, and the
-app suggests assignments (highest risk first, nearest free boat that can reach the
-vessel and return) which do nothing until accepted.
+**Decisions.** The officer can send a patrol boat to one or more vessels, release it,
+put a vessel on a watchlist, or dismiss it with a reason. Each decision is appended as
+rows recording who decided, when, about which vessel and boat, and the score and rank
+the officer saw at the time. Rows are never changed or deleted. A boat cannot be on two
+patrols at once. The app can suggest a route (the highest-risk vessels a boat can reach
+and still get home), which does nothing until saved.
 
 ## How accuracy is measured
 
@@ -103,7 +126,7 @@ and scoring steps never receive. A test relabels every vessel and checks that no
 changes.
 
 **Why a look-back design.** Listed vessels mostly stop broadcasting AIS. In the current
-12-month window not one of the 134 patrol-area vessels is listed, and across everything
+12-month window not one of the patrol-area vessels is listed, and across everything
 fetched for that window only one listed vessel was transmitting. Measuring accuracy on
 the current window alone would be measuring nothing. So the evaluation looks back:
 
@@ -124,7 +147,7 @@ alongside: random order, and "busiest vessels first".
 
 ## Results
 
-Real data, accessed 2026-11-11. Model version `rules-v1-516a782c`.
+Real data, accessed 2026-11-12. Model version `rules-v1-516a782c`.
 
 **The evaluation set is small.** 66 IMO numbers on the official lists led to 15 hulls
 with usable AIS history, 14 of which the indicator confirmed. One comparison vessel
@@ -138,26 +161,31 @@ rank.
 
 | Ranking | Matched AUC (95% range) |
 |---|---|
-| **Risk score** | **0.97** (0.93-0.99) |
-| Busiest vessels first | 0.39 (0.13-0.63) |
+| **Risk score** | **0.97** (0.95-0.99) |
+| Busiest vessels first | 0.42 (0.20-0.64) |
 | Random order | 0.50 |
-| Going dark alone | 0.97 |
-| Encounters alone | 0.63 |
-| Unauthorised fishing alone | 0.57 |
-| Flag changes alone | 0.49 |
+| Going dark alone | 0.95 |
+| Encounters alone | 0.70 |
+| Unauthorised fishing alone | 0.58 |
 | Protected areas alone | 0.49 |
+| Flag changes alone | 0.48 |
 
-Within their own groups of 31, the five listed fishing vessels ranked 1st, 1st, 2nd,
-2nd and 4th. Pooled across groups, 3 of the 5 are in the top 10 of 155 and 4 are in the
+Within their own groups of 31, the five listed fishing vessels ranked 1st, 2nd, 2nd,
+2nd and 3rd. Pooled across groups, 3 of the 5 are in the top 10 of 155 and 4 are in the
 top 25; random order would put 0.3 and 0.8 there.
+
+These figures depend on which comparison vessels are drawn. Across three separate
+draws made while building this, the matched AUC came out between 0.95 and 0.97 and
+the worst-placed listed vessel between 3rd and 7th of 31. The draw is now fixed per
+group, so the numbers stay the same from one refresh to the next.
 
 What this does and does not show:
 
 - **Five vessels is very little evidence.** Three of the five are sister ships from one
   fleet (ISRAR 1, 2 and 3), so there are closer to three independent cases. The 95%
   range is computed from those same five and is too narrow to trust.
-- **It validates one signal, not five.** Going dark on its own does as well as the full
-  score. Encounters help a little. The protected-area, unauthorised-fishing and
+- **It validates one signal, not five.** Going dark on its own does almost as well as
+  the full score. Encounters help a little. The protected-area, unauthorised-fishing and
   flag-change signals show no measurable link to listing in this data. That does not
   mean they are useless (a listing is rarely *for* fishing near Galapagos), only that
   this ground truth cannot confirm them.
@@ -176,13 +204,13 @@ is one of the score's own signals, while most listed support vessels were laid u
 little or no activity. It is reported because hiding it would be less honest than
 explaining it. The tool is not meant to rank support vessels.
 
-Pooling both classes gives 0.44 (0.23-0.67), which mixes a valid test with an invalid
+Pooling both classes gives 0.44 (0.21-0.67), which mixes a valid test with an invalid
 one and is not a useful number.
 
 ### The current patrol list
 
-For the 12 months to 1 October 2026, 134 fishing vessels had at least 24 apparent
-fishing hours in the patrol area: 11 score High, 72 Elevated and 51 Low. 102 are
+For the 12 months to 7 November 2026, 127 fishing vessels had at least 24 apparent
+fishing hours in the patrol area: 9 score High, 66 Elevated and 52 Low. 93 are
 Ecuadorian-flagged. Going dark contributes the most points on average, followed by
 fishing inside or just outside the two reserves.
 
@@ -201,7 +229,11 @@ Run `python -m patrol_planner report` for the full tables.
 - A vessel with no AIS is invisible. Small boats and vessels that never transmit are not
   ranked at all.
 - "Last known position" is where a vessel's most recent recorded event happened, not a
-  live position.
+  live position. The source publishes with a delay of a few days.
+- A vessel's trail on the map is where it apparently fished over the last 90 days, not
+  its track; tracks are not available to free API tokens.
+- Patrol routes are straight lines to last known positions. Weather, currents and land
+  are not considered.
 - Being unlisted is not being innocent. Lists are short, slow and incomplete.
 - IUU-listed vessels without an IMO number on the lists (many on the NPFC list) are not
   found by the IMO lookup.
@@ -219,14 +251,18 @@ src/patrol_planner/       scoring, accuracy, actions and data access; no UI code
   transforms/features.py  clean -> features
   transforms/scoring.py   features -> scores and plain-words reasons
   evaluation.py           accuracy against the IUU-list ground truth
-  planning.py             ranking and suggested boat assignments
+  planning.py             ranking, patrol routes and suggested routes
+  geo.py                  distances, bearings, outline thinning
   actions.py              officer decisions and the append-only log
+  jobs.py                 background data refresh
   views.py                read-only table joins for any front end
   sources/                Global Fishing Watch client, ingestion, IUU list reader, sample generator
 app/streamlit_app.py      the officer app (display only)
-config/settings.toml      patrol area, weights, thresholds, example patrol fleet
+config/settings.toml      default patrol area, weights, thresholds, example patrol fleet
+config/overrides.json     settings changed in the app (created on first save)
+tools/create_shortcut.ps1 makes the Desktop shortcut
 data/real/                snapshot of real cleaned tables, features, scores and evaluation
-tests/                    80 tests
+tests/                    95 tests
 DECISIONS.md              every choice made while building, with its reason
 AIP_MIGRATION.md          step-by-step guide for moving to Palantir Foundry / AIP
 ```
@@ -236,14 +272,17 @@ AIP_MIGRATION.md          step-by-step guide for moving to Palantir Foundry / AI
 - **Global Fishing Watch API** (vessel activity, identity, indicators): CC BY-NC 4.0,
   non-commercial use only. [Powered by Global Fishing Watch](https://globalfishingwatch.org).
   Global Fishing Watch. 2026, updated daily. Fishing effort v5.0, fishing, encounter and
-  AIS-gap events, vessel identity, 2020-01-01 to 2026-10-01. Data set accessed 2026-11-11
+  AIS-gap events, vessel identity, 2020-01-01 to 2026-11-07. Data set accessed 2026-11-12
   at https://globalfishingwatch.org/our-apis/. The snapshot in `data/real/` is derived
   from this data and carries the same licence; keep the attribution if you share it.
 - **Official IUU vessel lists** of IOTC, CCSBT and CCAMLR: public documents, read only
   to find IMO numbers to look up. The Combined IUU Vessel List is not downloaded
   directly; it reaches this project only through the Global Fishing Watch indicator.
 - **Protected areas**: World Database on Protected Areas, via Global Fishing Watch. Only
-  the areas this project refers to are stored.
-- **Synthetic sample**: generated by `sources/sample.py`. Every id starts with `sample-`
-  and every name contains `SAMPLE`. It is never committed and its accuracy figures mean
-  nothing.
+  the areas this project refers to are stored. Their outlines are downloaded on refresh
+  and kept on this machine only, so a fresh copy of the repository shows them after its
+  first refresh.
+- **Map background**: © OpenStreetMap contributors.
+- **Synthetic sample**: generated by `sources/sample.py` for the tests. Every id starts
+  with `sample-` and every name contains `SAMPLE`. It is never committed, the app does
+  not use it, and its accuracy figures mean nothing.
