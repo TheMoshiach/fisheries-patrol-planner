@@ -22,8 +22,10 @@ relies on. Check those pages when you do the step, and expect small differences.
 | Settings | `config/settings.toml` | A constants module in the repository, or a small config dataset |
 | Officer decisions | `actions.py`, CSV log | Action types that create `PatrolDecision` objects |
 | Read-only views | `views.py` | Object sets, links and Workshop variables |
-| Assignment suggestions | `planning.py` | A Python function published to the Ontology |
-| App | `app/streamlit_app.py` | Workshop module, or the same app on the Ontology SDK |
+| Route planning and suggestions | `planning.py`, `geo.py` | Python functions published to the Ontology |
+| In-app settings | `config/overrides.json` | Editable objects (boats) and a small configuration dataset |
+| Refresh button | `jobs.py` | A schedule, or a "run now" on the ingestion build |
+| App | `app/streamlit_app.py` | Workshop module built around a map widget, or the same app on the Ontology SDK |
 | Plain-words reasons | templates in `scoring.py` | Kept as-is; optionally enriched by an AIP Logic function |
 | Tests | `tests/` | Unit tests in the code repository, plus data health checks |
 
@@ -206,8 +208,8 @@ Docs: [Action types](https://www.palantir.com/docs/foundry/action-types/overview
 
 | Action type | Parameters | Submission criteria (from the code) | Edit |
 |---|---|---|---|
-| Assign patrol | vessel, patrol boat, rationale | boat status is `available`; boat has no open assignment; vessel has no open assignment | create `PatrolDecision` (`ASSIGN_PATROL`) |
-| Release boat | patrol boat, rationale | boat has an open assignment | create `PatrolDecision` (`RELEASE_BOAT`) |
+| Assign patrol route | patrol boat, ordered list of vessels, rationale | boat status is `available`; boat has no open patrol; no listed vessel is already covered; at least one vessel | create one `PatrolDecision` (`ASSIGN_PATROL`) per vessel, sharing a `patrol_id`, with `route_stop` giving the order |
+| Release boat | patrol boat, rationale | boat has an open patrol | create one `PatrolDecision` (`RELEASE_BOAT`) per vessel on that patrol |
 | Add to watchlist | vessel, rationale | none beyond a valid vessel | create `PatrolDecision` (`WATCHLIST`) |
 | Dismiss vessel | vessel, rationale | rationale is not empty | create `PatrolDecision` (`DISMISS`) |
 
@@ -219,8 +221,11 @@ Details:
 - Each decision stores `risk_score_id`, `risk_score_at_decision` and
   `rank_at_decision`: fill them from the vessel's current `RiskScore` so the log
   records what the officer saw even after scores are rebuilt.
-- "Open assignment" is derived from the log (`actions.open_assignments`): the
-  latest assign/release decision per boat. Two ways to express that for
+- A patrol with several vessels writes several objects in one action. Make
+  "Assign patrol route" function-backed so it can loop over the vessel list;
+  `actions.assign_route` is the logic to port.
+- "Open patrol" is derived from the log (`actions.open_assignments`): a boat's
+  assignments made since its last release. Two ways to express that for
   submission criteria: make the assign and release actions function-backed and
   port `open_assignments` into the function; or also have those actions set a
   `current_vessel_id` property on `PatrolBoat` and test that property. The second
@@ -235,11 +240,13 @@ Details:
 
 Either route works; they are not exclusive.
 
-- **Workshop.** Rebuild the five tabs as a module: an object table of `Vessel`
-  filtered to `in_patrol_area` and sorted by the linked score; a map of last known
-  positions and boat home ports; a detail panel listing linked `RiskSignal` and
-  `VesselEvent` objects; buttons bound to the four action types; a table of
-  `PatrolDecision`; and a metrics view on `evaluation_metrics`. `views.py` shows
+- **Workshop.** Rebuild the screens as a module: a map widget showing `Vessel`
+  objects (filtered to `in_patrol_area`, coloured by risk tier), `PatrolBoat`
+  objects and `ProtectedArea` shapes; an object list sorted by the linked score
+  with a search box; a detail panel listing linked `RiskSignal` and `VesselEvent`
+  objects, with the events also shown on the map; a route panel that calls the
+  route function and submits the "Assign patrol route" action; a table of
+  `PatrolDecision`; and a short reliability page on `evaluation_metrics`. `views.py` shows
   exactly which joins each panel needs.
   Docs: [Workshop](https://www.palantir.com/docs/foundry/workshop/overview/).
 - **Keep the Streamlit app.** Replace the body of each function in `views.py` and
@@ -248,9 +255,16 @@ Either route works; they are not exclusive.
   `actions`, `planning` and `reporting`.
   Docs: [Ontology SDK](https://www.palantir.com/docs/foundry/ontology-sdk/overview/).
 
-`planning.suggest_assignments` is a pure function of ranked vessels and boats.
-Publish it as a Python function so Workshop can show the suggested plan and offer
-each suggestion as a pre-filled "Assign patrol" action.
+`planning.plan_route`, `planning.route_summary` and `planning.suggest_route` are
+pure functions of a boat and ranked vessels. Publish them as Python functions so
+Workshop can draw a route, show its legs (distance, bearing, hours) and offer a
+suggested route as a pre-filled "Assign patrol route" action.
+
+The local settings page maps as follows: patrol boats become editable through
+their own action type on `PatrolBoat`; signal weights and the patrol area become
+a one-row configuration dataset that the transforms read (changing it triggers a
+rebuild); and the "Refresh data" button becomes the schedule on the ingestion
+build, with a manual "run now".
 Docs: [Functions](https://www.palantir.com/docs/foundry/functions/overview/),
 [Python functions](https://www.palantir.com/docs/foundry/functions/python-getting-started/).
 
@@ -337,5 +351,11 @@ Rules to hold these to:
   `vessel_insights`.
 - **Positions are not live.** `last_lat`/`last_lon` is the place of the most
   recent recorded event. A live AIS feed would be a separate source.
+- **Trails are not tracks.** The map's vessel trail is the last 90 days of
+  apparent fishing locations (`views.vessel_trail`), because tracks are not
+  available to public API tokens.
+- **Reserve outlines stay out of shared datasets** unless your licence for the
+  World Database on Protected Areas allows it; locally they are kept in the raw
+  folder and never committed.
 - **Patrol boats** are an example fleet; replace the dataset with real assets, or
   make boats editable through their own action type.
