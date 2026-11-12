@@ -5,7 +5,7 @@ Choices made while building, each with its reason.
 | # | Decision | Reason |
 |---|---|---|
 | 1 | Git identity set for this repo only: GitHub login with GitHub's noreply address. | No git identity was configured on the machine; the noreply address attributes commits to the account without exposing an email. |
-| 2 | Python 3.11+, with pandas, numpy, pyarrow, requests, python-dotenv, pypdf, streamlit, pytest. | All widely used and maintained PyPI packages. No skills, plugins or MCP servers were added, so no scan was needed. |
+| 2 | Python 3.11+, with pandas, numpy, pyarrow, requests, python-dotenv, pypdf, streamlit, pytest. | All widely used and maintained PyPI packages. |
 | 3 | Vessel data from the Global Fishing Watch API v3. | It provides AIS gaps, encounters, fishing effort, protected-area tags and identity. Terms checked: CC BY-NC 4.0, non-commercial, attribution required, 50,000 requests/day. The client caches every response and paces requests. |
 | 4 | Ground truth is the Global Fishing Watch IUU-list indicator (official RFMO lists via the Combined IUU Vessel List). | It is the only public, official, per-vessel outcome that can be joined to AIS identities. Applied uniformly to every vessel. |
 | 5 | The Combined IUU Vessel List spreadsheet is not downloaded directly. | The download asks for contact details and a reason, and its terms forbid repackaging. |

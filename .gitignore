@@ -28,8 +28,6 @@ Thumbs.db
 # The synthetic sample is regenerated on demand.
 data/sample/
 
-# Local tool settings
-.claude/
 
 # Refresh job bookkeeping
 data/refresh_status.json
