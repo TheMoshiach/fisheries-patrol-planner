@@ -13,7 +13,12 @@ from pathlib import Path
 
 from playwright.sync_api import Page, expect, sync_playwright
 
-from app_harness import running_app
+from app_harness import PROJECT, running_app
+
+sys.path.insert(0, str(PROJECT / "app"))
+import theme  # noqa: E402
+
+VESSELS = f'path[stroke="{theme.VESSEL_OUTLINE}"], path[stroke="{theme.SELECTED_OUTLINE}"]'
 
 MAP = 'iframe[title="streamlit_folium.st_folium"]'
 results: list[tuple[str, bool, str]] = []
@@ -76,6 +81,10 @@ def loads(page):
     expect(frame.locator("path.leaflet-interactive").first).to_be_visible(timeout=30000)
     assert frame.locator("path.leaflet-interactive").count() > 100
     assert frame.locator("img.leaflet-tile").count() > 0, "no background map tiles"
+    page_bg = page.evaluate("() => getComputedStyle(document.querySelector('.stApp')).backgroundColor")
+    assert page_bg == "rgb(11, 19, 32)", f"page is not dark: {page_bg}"
+    tile_filter = frame.locator(".leaflet-tile-pane").first.evaluate("el => getComputedStyle(el).filter")
+    assert "invert" in tile_filter, f"map tiles are not darkened: {tile_filter}"
 
 
 @check("search box finds a vessel by name")
@@ -84,14 +93,14 @@ def search(page):
     assert "RAMSES" in heading(page), heading(page)
     expect(page.get_by_text("Why it ranks here")).to_be_visible()
     frame = page.frame_locator(MAP).first
-    assert frame.locator('path[stroke="#1565c0"]').count() > 0, "no trail drawn"
+    assert frame.locator(f'path[stroke="{theme.TRAIL}"]').count() > 0, "no trail drawn"
 
 
 @check("clicking a dot on the map selects that vessel")
 def click_map(page):
     before = heading(page)
     frame = page.frame_locator(MAP).first
-    dots = frame.locator('path[fill="#c62828"][stroke="#ffffff"]')
+    dots = frame.locator(f'path[fill="{theme.TIER_COLOURS["High"]}"][stroke="{theme.VESSEL_OUTLINE}"]')
     for index in range(min(dots.count(), 6)):
         dots.nth(index).click(force=True)
         settle(page, 1200)
@@ -117,17 +126,17 @@ def click_list(page):
 @check("risk filter narrows the list and the map")
 def filters(page):
     frame = page.frame_locator(MAP).first
-    before = frame.locator('path[stroke="#ffffff"], path[stroke="#111111"]').count()
+    before = frame.locator(VESSELS).count()
     page.get_by_label("Remove Low", exact=False).or_(page.get_by_label("Low, close by backspace")).first.click()
     settle(page, 1500)
-    after = frame.locator('path[stroke="#ffffff"], path[stroke="#111111"]').count()
+    after = frame.locator(VESSELS).count()
     assert 0 < after < before, (before, after)
 
 
 @check("layer switches hide patrol boats and protected areas")
 def layers(page):
     frame = page.frame_locator(MAP).first
-    boats, reserves = frame.locator(".awesome-marker"), frame.locator('path[stroke="#1b7f5a"]')
+    boats, reserves = frame.locator(".awesome-marker"), frame.locator(f'path[stroke="{theme.RESERVE}"]')
     assert boats.count() >= 3 and reserves.count() >= 1
     sidebar = page.get_by_test_id("stSidebarUserContent")
     sidebar.get_by_text("Patrol boats", exact=True).click()

@@ -6,6 +6,9 @@ Run with:  streamlit run app/streamlit_app.py
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import folium
 import pandas as pd
 import streamlit as st
@@ -16,11 +19,14 @@ from patrol_planner import actions, config, jobs, pipeline, planning, views
 from patrol_planner.sources.ingest import load_token
 from patrol_planner.storage import open_store, settings_for
 
-TIER_COLOURS = {"High": "#c62828", "Elevated": "#ef8f00", "Low": "#4f8f5b"}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import theme  # noqa: E402  (lives next to this file)
+
+TIER_COLOURS = theme.TIER_COLOURS
 EVENT_STYLE = {
-    "gap": ("#37474f", "AIS switched off"),
-    "encounter": ("#6a1b9a", "Met another vessel"),
-    "fishing": ("#c62828", "Flagged fishing"),
+    "gap": (theme.EVENT_COLOURS["gap"], "AIS switched off"),
+    "encounter": (theme.EVENT_COLOURS["encounter"], "Met another vessel"),
+    "fishing": (theme.EVENT_COLOURS["fishing"], "Flagged fishing"),
 }
 SIGNAL_LABELS = {
     "going_dark": "Going dark (AIS gaps)",
@@ -244,8 +250,9 @@ with tab_map:
             tiles="OpenStreetMap",
             control_scale=True,
         )
+        theme.DarkMapStyle().add_to(base)
         folium.Rectangle(
-            [[south, west], [north, east]], color="#555555", weight=1.5, fill=False, dash_array="6",
+            [[south, west], [north, east]], color=theme.PATROL_AREA, weight=1.5, fill=False, dash_array="6",
             tooltip="Patrol area",
         ).add_to(base)
 
@@ -255,7 +262,7 @@ with tab_map:
             for shape in views.protected_area_shapes(store):
                 folium.GeoJson(
                     shape["geometry"],
-                    style_function=lambda _: {"color": "#1b7f5a", "weight": 1.5, "fillOpacity": 0.08},
+                    style_function=lambda _: {"color": theme.RESERVE, "weight": 1.5, "fillOpacity": 0.12},
                     tooltip=f"Protected area: {shape['name']}",
                 ).add_to(reserves)
             layers.append(reserves)
@@ -268,7 +275,7 @@ with tab_map:
             folium.CircleMarker(
                 [row.last_lat, row.last_lon],
                 radius=10 if is_selected else 6,
-                color="#111111" if is_selected else "#ffffff",
+                color=theme.SELECTED_OUTLINE if is_selected else theme.VESSEL_OUTLINE,
                 weight=3 if is_selected else 1,
                 fill=True,
                 fill_color=TIER_COLOURS[row.risk_tier],
@@ -293,12 +300,12 @@ with tab_map:
             trail = views.vessel_trail(store, selected_id, settings)
             if len(trail) > 1:
                 folium.PolyLine(
-                    trail[["lat", "lon"]].values.tolist(), color="#1565c0", weight=2, opacity=0.6,
+                    trail[["lat", "lon"]].values.tolist(), color=theme.TRAIL, weight=2, opacity=0.7,
                     dash_array="4", tooltip="Order of recent fishing locations (not the actual track)",
                 ).add_to(detail)
             for point in trail.itertuples(index=False):
                 folium.CircleMarker(
-                    [point.lat, point.lon], radius=2.5, color="#1565c0", fill=True, fill_opacity=0.8,
+                    [point.lat, point.lon], radius=2.5, color=theme.TRAIL, fill=True, fill_opacity=0.8,
                     weight=0, tooltip=f"Fished here {point.start_time:%d %b %Y}",
                 ).add_to(detail)
             for event in views.vessel_events(store, selected_id, settings).dropna(
@@ -322,15 +329,11 @@ with tab_map:
                 route_layer = folium.FeatureGroup(name="Planned route")
                 home = [float(route_boat.iloc[0]["home_lat"]), float(route_boat.iloc[0]["home_lon"])]
                 path = [home] + route_legs[["to_lat", "to_lon"]].values.tolist()
-                folium.PolyLine(path, color="#111111", weight=3, tooltip="Planned patrol route").add_to(route_layer)
+                folium.PolyLine(path, color=theme.ROUTE, weight=3, tooltip="Planned patrol route").add_to(route_layer)
                 for leg in route_legs[route_legs["vessel_id"].notna()].itertuples(index=False):
                     folium.Marker(
                         [leg.to_lat, leg.to_lon],
-                        icon=folium.DivIcon(
-                            html=f'<div style="background:#fff;border:2px solid #1a237e;border-radius:50%;'
-                                 f'width:22px;height:22px;line-height:18px;text-align:center;font-weight:700;'
-                                 f'color:#1a237e;margin:-5px 0 0 -5px">{leg.leg}</div>'
-                        ),
+                        icon=folium.DivIcon(html=theme.stop_marker_html(leg.leg)),
                         tooltip=f"Stop {leg.leg}: {leg.to}",
                     ).add_to(route_layer)
                 layers.append(route_layer)
@@ -665,7 +668,8 @@ with tab_settings:
         st.caption("Click the square tool at the top left of the map, then drag a rectangle.")
         area_map = folium.Map(tiles=None, max_bounds=True, min_zoom=2)
         folium.TileLayer("OpenStreetMap", no_wrap=True).add_to(area_map)
-        folium.Rectangle([[south, west], [north, east]], color="#555555", weight=1.5, fill=False,
+        theme.DarkMapStyle().add_to(area_map)
+        folium.Rectangle([[south, west], [north, east]], color=theme.PATROL_AREA, weight=1.5, fill=False,
                          tooltip="Current patrol area").add_to(area_map)
         area_map.fit_bounds([[south - 4, west - 4], [north + 4, east + 4]])
         Draw(draw_options={"polyline": False, "polygon": False, "circle": False, "marker": False,

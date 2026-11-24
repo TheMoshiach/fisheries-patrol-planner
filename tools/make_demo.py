@@ -19,7 +19,7 @@ import imageio_ffmpeg
 from playwright.sync_api import Locator, Page, sync_playwright
 
 from app_harness import PROJECT, running_app
-from browser_check import MAP, settle
+from browser_check import MAP, settle, theme
 
 SIZE = {"width": 1600, "height": 900}
 OUTPUT = PROJECT / "demo" / "fisheries-patrol-planner-demo.mp4"
@@ -32,7 +32,7 @@ OVERLAY = """
     const style = document.createElement('style');
     style.textContent = `
       #demo-caption { position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%);
-        max-width: 1180px; padding: 16px 30px; border-radius: 14px; background: rgba(13, 27, 42, .92);
+        max-width: 1180px; padding: 16px 30px; border-radius: 14px; background: rgba(6, 12, 22, .94); border: 1px solid rgba(79, 195, 247, .45);
         color: #fff; font: 600 27px/1.35 "Segoe UI", Arial, sans-serif; text-align: center;
         box-shadow: 0 8px 30px rgba(0,0,0,.35); z-index: 999998; opacity: 0; transition: opacity .35s; }
       #demo-cursor { position: fixed; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%;
@@ -137,7 +137,7 @@ def record(page: Page) -> None:
 
     # 1. the map
     d.caption("Every dot is a fishing vessel active in the patrol area: red is high risk, amber elevated, green low.")
-    red = frame.locator('path[fill="#c62828"]')
+    red = frame.locator(f'path[fill="{theme.TIER_COLOURS["High"]}"]')
     d.over(red.nth(0), 1.1)
     d.wait(1.2)
     d.over(red.nth(min(2, red.count() - 1)), 0.9)
@@ -164,7 +164,9 @@ def record(page: Page) -> None:
 
     # 4. events on the map
     d.caption("The map shows where it fished recently, and where it went dark or met another ship at sea.")
-    events = frame.locator('path[fill="#37474f"], path[fill="#6a1b9a"]')
+    events = frame.locator(
+        f'path[fill="{theme.EVENT_COLOURS["gap"]}"], path[fill="{theme.EVENT_COLOURS["encounter"]}"]'
+    )
     if events.count():
         d.over(events.first, 1.1)
         d.wait(2.0)
